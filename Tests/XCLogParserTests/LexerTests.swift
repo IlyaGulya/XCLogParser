@@ -56,6 +56,15 @@ class LexerTests: XCTestCase {
         XCTAssertEqual(stringToken, Token.string("Xcode.IDEActivityLogDomainType.BuildLog"))
     }
 
+    func testTokenizeStringUsesUTF8ByteLength() throws {
+        let value = "➜ Sources/Bundle+Locali🙂"
+        let logContents = "SLF0#\(value.utf8.count)\"\(value)1#"
+
+        let tokens = try lexer.tokenize(contents: logContents, redacted: false, withoutBuildSpecificInformation: false)
+
+        XCTAssertEqual(tokens, [.int(0), .string(value), .int(1)])
+    }
+
     func testTokenizeDouble() throws {
         let logContents = "SLF09#21%IDEActivityLogSection1@39\"Xcode.IDEActivityLogDomainType.BuildLog356098f239dfc041^"
         let tokens = try lexer.tokenize(contents: logContents, redacted: false, withoutBuildSpecificInformation: false)

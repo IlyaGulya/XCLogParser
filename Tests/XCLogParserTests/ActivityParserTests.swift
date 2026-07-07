@@ -17,6 +17,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+import Foundation
+import Gzip
 import XCTest
 @testable import XCLogParser
 
@@ -584,6 +586,30 @@ class ActivityParserTests: XCTestCase {
         XCTAssertEqual(10, parser.logVersion)
     }
 
+    func testParseActivityLogInURLPreservesUTF8ByteLengthStringsAndEmbeddedNullBytes() throws {
+        let title = "➜ Sources/Bundle+Locali🙂\u{0}zation"
+        var sectionTokens = IDEActivityLogSectionTokensWithoutAttachments
+        sectionTokens[2] = Token.string(title)
+        let tokens = [
+            Token.int(10),
+            Token.className("IDECommandLineBuildLog"),
+            Token.classNameRef("IDECommandLineBuildLog")
+        ] + sectionTokens
+        let directory = try TestUtils.createRandomTestDir()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let logURL = try writeActivityLog(contents: try slfContents(from: tokens), in: directory)
+
+        let activityLog = try parser.parseActivityLogInURL(
+            logURL,
+            redacted: false,
+            withoutBuildSpecificInformation: false
+        )
+
+        XCTAssertEqual(10, activityLog.version)
+        XCTAssertEqual(title, activityLog.mainSection.title)
+        XCTAssertEqual(10, parser.logVersion)
+    }
+
     func testParseDBGConsoleLog() throws {
         parser.logVersion = 11
         let tokens = DBGConsoleLogTokens
@@ -712,6 +738,44 @@ class ActivityParserTests: XCTestCase {
         let metrics = try IDEActivityLogSectionAttachment.BuildOperationMetrics(from: data)
         XCTAssertEqual(metrics.counters["a"], 1)
         XCTAssertEqual(metrics.taskCounters["SwiftDriver"]?["x"], 2)
+    }
+
+    private func writeActivityLog(contents: String, in directory: URL) throws -> URL {
+        let url = directory.appendingPathComponent("test.xcactivitylog")
+        let data = contents.data(using: .utf8)!
+        try data.gzipped().write(to: url)
+        return url
+    }
+
+    private func slfContents(from tokens: [Token]) throws -> String {
+        var classNames: [String] = []
+        var contents = "SLF"
+        for token in tokens {
+            switch token {
+            case .int(let value):
+                contents += "\(value)#"
+            case .className(let value):
+                classNames.append(value)
+                contents += "\(value.utf8.count)%\(value)"
+            case .classNameRef(let value):
+                let index = try XCTUnwrap(
+                    classNames.firstIndex(of: value),
+                    "Class name \(value) must be emitted before it is referenced"
+                )
+                contents += "\(index + 1)@"
+            case .string(let value):
+                contents += "\(value.utf8.count)\"\(value)"
+            case .double(let value):
+                contents += "\(String(value.bitPattern.byteSwapped, radix: 16))^"
+            case .null:
+                contents += "-"
+            case .list(let value):
+                contents += "\(value)("
+            case .json(let value):
+                contents += "\(value.utf8.count)*\(value)"
+            }
+        }
+        return contents
     }
 
 }

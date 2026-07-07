@@ -22,62 +22,71 @@ import Foundation
 final class Scanner {
 
     let string: String
+    private let bytes: [UInt8]
 
     private(set) var offset: Int
-    private(set) lazy var stringEndIndex: String.Index = self.string.endIndex
 
     var isAtEnd: Bool {
-        String.Index(compilerSafeOffset: self.offset, in: self.string) >= self.stringEndIndex
+        offset >= bytes.count
     }
 
     init(string: String) {
         self.string = string
+        self.bytes = Array(string.utf8)
         self.offset = 0
     }
 
     func scan(count: Int) -> String? {
-        let start = String.Index(compilerSafeOffset: self.offset, in: self.string)
         let endOffset = self.offset + count
 
-        guard endOffset <= self.string.utf16.count else { return nil }
-
-        let end = String.Index(compilerSafeOffset: endOffset, in: self.string)
-        let result = self.string[start..<end]
-
-        guard result.count == count else { return nil }
+        guard count >= 0,
+              endOffset <= bytes.count,
+              let result = String(bytes: bytes[offset..<endOffset], encoding: .utf8)
+        else { return nil }
 
         self.offset += count
 
-        return String(result)
+        return result
     }
 
     func scan(string value: String) -> Bool {
-        guard self.string.starts(with: value) else { return false }
+        let valueBytes = Array(value.utf8)
+        let endOffset = offset + valueBytes.count
+        guard endOffset <= bytes.count,
+              bytes[offset..<endOffset].elementsEqual(valueBytes)
+        else { return false }
 
-        self.offset += value.count
+        self.offset += valueBytes.count
         return true
     }
 
     func scanCharacters(from allowedCharacters: Set<Character>) -> String? {
-        var prefix: String = ""
-        var characterIndex = String.Index(compilerSafeOffset: self.offset, in: self.string)
+        let allowedBytes = Set(
+            allowedCharacters.compactMap { character -> UInt8? in
+                let characterBytes = Array(String(character).utf8)
+                return characterBytes.count == 1 ? characterBytes[0] : nil
+            }
+        )
+        var prefix: [UInt8] = []
 
-        while characterIndex < self.stringEndIndex {
-            let character = self.string[characterIndex]
-
-            guard allowedCharacters.contains(character) else {
+        while !isAtEnd {
+            guard allowedBytes.contains(bytes[offset]) else {
                 break
             }
 
-            prefix.append(character)
+            prefix.append(bytes[offset])
             self.offset += 1
-            characterIndex = String.Index(utf16Offset: self.offset, in: self.string)
         }
 
-        return prefix
+        return String(bytes: prefix, encoding: .utf8)
     }
 
     func moveOffset(by value: Int) {
         self.offset += value
+    }
+
+    func preview(count: Int) -> String {
+        let endOffset = min(offset + count, bytes.count)
+        return String(decoding: bytes[offset..<endOffset], as: UTF8.self)
     }
 }

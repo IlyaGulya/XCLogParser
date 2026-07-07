@@ -38,7 +38,10 @@ let package = Package(
         ),
         .testTarget(
             name: "XCLogParserTests",
-            dependencies: ["XCLogParser"]
+            dependencies: [
+                "XCLogParser",
+                .product(name: "Gzip", package: "GzipSwift")
+            ]
         ),
     ]
 

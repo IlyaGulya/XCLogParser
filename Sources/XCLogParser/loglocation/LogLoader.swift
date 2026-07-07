@@ -26,17 +26,7 @@ public struct LogLoader {
         do {
             let data = try Data(contentsOf: url)
             let unzipped = try data.gunzipped()
-            let string: String? = unzipped.withUnsafeBytes { pointer in
-                guard let charPointer = pointer
-                    .assumingMemoryBound(to: CChar.self)
-                    .baseAddress
-                else {
-                    return nil
-                }
-
-                return String(cString: charPointer, encoding: .ascii)
-            }
-            guard let contents = string else {
+            guard let contents = String(data: unzipped, encoding: .utf8) else {
                 throw LogError.readingFile(url.path)
             }
             return contents

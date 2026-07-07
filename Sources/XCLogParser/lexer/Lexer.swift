@@ -264,16 +264,6 @@ public final class Lexer {
 
 private extension Scanner {
     var approximateLine: String {
-        let currentLocation = self.offset
-        let contentSize = self.string.count
-
-        let start = String.Index(compilerSafeOffset: currentLocation, in: self.string)
-        let endCount = contentSize - currentLocation > 21 ? currentLocation + 21 : contentSize - currentLocation
-        let end = String.Index(compilerSafeOffset: endCount, in: self.string)
-
-        if end <= start {
-            return String(self.string[start..<self.stringEndIndex])
-        }
-        return String(self.string[start..<end])
+        preview(count: 21)
     }
 }
