@@ -34,7 +34,73 @@ public class ActivityParser {
     /// Used to skip parsing of the `IDEActivityLogSectionAttachment` list on version less than 11.
     var logVersion: Int8?
 
+    /// Reused across the whole parse instead of constructed per attachment.
+    ///
+    /// `parseAsJson` built a `JSONDecoder()` on every call, and it is called once per section
+    /// attachment - 152,920 allocations on the flagged benchmark log came out of that function.
+    ///
+    /// Safe to store: this class already carries mutable parse state (`isCommandLineLog`,
+    /// `logVersion`), so an instance was never usable from more than one thread, and nothing in the
+    /// library parses concurrently - the only two call sites each own a fresh `ActivityParser`.
+    private let jsonDecoder = JSONDecoder()
+
     public init() {}
+
+    /// Upper bound on how much a list parser will reserve up front.
+    ///
+    /// The six list parsers below know their element count before they start, so they can size the
+    /// array once instead of letting `append` rediscover it by doubling - which showed up as
+    /// `_ArrayBuffer._consumeAndCreateNew` at 12.4% of allocations.
+    ///
+    /// The count is clamped because it comes straight out of the log file and is not trusted. The
+    /// parse loop only fails when it runs out of tokens, i.e. *after* a reservation would already
+    /// have happened, so a truncated or hostile log declaring a list of 2^60 elements would try to
+    /// allocate before anything noticed. Clamping keeps a bad count to a bounded waste and lets the
+    /// existing "unexpected EOF" error do the actual rejecting.
+    ///
+    /// One million is far above any real list: every element consumes at least one token, and the
+    /// largest benchmark log has 1,453,770 tokens in total across the whole file. A legitimate list
+    /// that hits this cap still parses correctly - the reservation is only a hint, and `append`
+    /// grows past it as before.
+    private static let maxReservedListCount = 1_000_000
+
+    /// `count` clamped to something safe to reserve - see `maxReservedListCount`.
+    private static func reservation(for count: Int) -> Int {
+        min(max(count, 0), maxReservedListCount)
+    }
+
+    /// Class names used to dispatch the parsing of a serialized object.
+    ///
+    /// These are compile-time constants on purpose: they used to be built at runtime with
+    /// `String(describing: SomeType.self)`, which allocates on every call and is not
+    /// constant-folded. Each value has been verified to be identical to what
+    /// `String(describing:)` produces for the corresponding type (a bare, non
+    /// module-qualified type name).
+    private enum ClassNames {
+        static let dvtTextDocumentLocation = "DVTTextDocumentLocation"
+        static let dvtDocumentLocation = "DVTDocumentLocation"
+        static let xcode3ProjectDocumentLocation = "Xcode3ProjectDocumentLocation"
+        static let ideLogDocumentLocation = "IDELogDocumentLocation"
+        static let ibDocumentMemberLocation = "IBDocumentMemberLocation"
+        static let dvtMemberDocumentLocation = "DVTMemberDocumentLocation"
+        static let ideActivityLogMessage = "IDEActivityLogMessage"
+        static let ideClangDiagnosticActivityLogMessage = "IDEClangDiagnosticActivityLogMessage"
+        static let ideDiagnosticActivityLogMessage = "IDEDiagnosticActivityLogMessage"
+        static let ideActivityLogAnalyzerResultMessage = "IDEActivityLogAnalyzerResultMessage"
+        static let ideActivityLogAnalyzerControlFlowStepMessage = "IDEActivityLogAnalyzerControlFlowStepMessage"
+        static let ideActivityLogAnalyzerEventStepMessage = "IDEActivityLogAnalyzerEventStepMessage"
+        static let ideActivityLogActionMessage = "IDEActivityLogActionMessage"
+        static let ideActivityLogSectionAttachment = "IDEFoundation.IDEActivityLogSectionAttachment"
+        static let ideActivityLogSection = "IDEActivityLogSection"
+        static let ideCommandLineBuildLog = "IDECommandLineBuildLog"
+        static let ideActivityLogMajorGroupSection = "IDEActivityLogMajorGroupSection"
+        static let ideActivityLogCommandInvocationSection = "IDEActivityLogCommandInvocationSection"
+        static let ideActivityLogUnitTestSection = "IDEActivityLogUnitTestSection"
+        static let dbgConsoleLog = "DBGConsoleLog"
+        static let ideConsoleItem = "IDEConsoleItem"
+        static let ideActivityLogAnalyzerControlFlowStepEdge = "IDEActivityLogAnalyzerControlFlowStepEdge"
+        static let ibMemberID = "IBMemberID"
+    }
 
     /// Parses the xcacticitylog argument into a `IDEActivityLog`
     /// - parameter logURL: `URL` of the xcactivitylog
@@ -336,6 +402,7 @@ public class ActivityParser {
             return []
         case .list(let count):
             var messages = [IDEActivityLogMessage]()
+            messages.reserveCapacity(Self.reservation(for: count))
             for _ in 0..<count {
                 let message = try parseLogMessage(iterator: &iterator)
                 messages.append(message)
@@ -355,6 +422,7 @@ public class ActivityParser {
             return []
         case .list(let count):
             var locations = [DVTDocumentLocation]()
+            locations.reserveCapacity(Self.reservation(for: count))
             for _ in 0..<count {
                 let location = try parseDocumentLocation(iterator: &iterator)
                 locations.append(location)
@@ -373,17 +441,20 @@ public class ActivityParser {
         guard case Token.classNameRef(let className) = classRefToken else {
             throw XCLogParserError.parseError("Unexpected token found parsing DocumentLocation \(classRefToken)")
         }
-        if className == String(describing: DVTTextDocumentLocation.self) {
+        switch className {
+        case ClassNames.dvtTextDocumentLocation:
             return try parseDVTTextDocumentLocation(iterator: &iterator)
-        } else if className == String(describing: DVTDocumentLocation.self)  ||
-            className == "Xcode3ProjectDocumentLocation" || className == "IDELogDocumentLocation" {
+        case ClassNames.dvtDocumentLocation,
+             ClassNames.xcode3ProjectDocumentLocation,
+             ClassNames.ideLogDocumentLocation:
             return try parseDVTDocumentLocation(iterator: &iterator)
-        } else if className == String(describing: IBDocumentMemberLocation.self) {
+        case ClassNames.ibDocumentMemberLocation:
             return try parseIBDocumentMemberLocation(iterator: &iterator)
-        } else if className == String(describing: DVTMemberDocumentLocation.self) {
+        case ClassNames.dvtMemberDocumentLocation:
             return try parseDVTMemberDocumentLocation(iterator: &iterator)
+        default:
+            throw XCLogParserError.parseError("Unexpected className found parsing DocumentLocation \(className)")
         }
-        throw XCLogParserError.parseError("Unexpected className found parsing DocumentLocation \(className)")
     }
 
     private func parseLogMessage(iterator: inout IndexingIterator<[Token]>) throws -> IDEActivityLogMessage {
@@ -393,24 +464,22 @@ public class ActivityParser {
         else {
             throw XCLogParserError.parseError("Unexpected token found parsing IDEActivityLogMessage \(classRefToken)")
         }
-        if className == String(describing: IDEActivityLogMessage.self) ||
-            className == "IDEClangDiagnosticActivityLogMessage" ||
-            className == "IDEDiagnosticActivityLogMessage" {
+        switch className {
+        case ClassNames.ideActivityLogMessage,
+             ClassNames.ideClangDiagnosticActivityLogMessage,
+             ClassNames.ideDiagnosticActivityLogMessage:
             return try parseIDEActivityLogMessage(iterator: &iterator)
-        }
-        if className ==  String(describing: IDEActivityLogAnalyzerResultMessage.self) {
+        case ClassNames.ideActivityLogAnalyzerResultMessage:
             return try parseIDEActivityLogAnalyzerResultMessage(iterator: &iterator)
-        }
-        if className ==  String(describing: IDEActivityLogAnalyzerControlFlowStepMessage.self) {
+        case ClassNames.ideActivityLogAnalyzerControlFlowStepMessage:
             return try parseIDEActivityLogAnalyzerControlFlowStepMessage(iterator: &iterator)
-        }
-        if className == String(describing: IDEActivityLogAnalyzerEventStepMessage.self) {
+        case ClassNames.ideActivityLogAnalyzerEventStepMessage:
             return try parseIDEActivityLogAnalyzerEventStepMessage(iterator: &iterator)
-        }
-        if className == String(describing: IDEActivityLogActionMessage.self) {
+        case ClassNames.ideActivityLogActionMessage:
             return try parseIDEActivityLogActionMessage(iterator: &iterator)
+        default:
+            throw XCLogParserError.parseError("Unexpected className found parsing IDEActivityLogMessage \(className)")
         }
-        throw XCLogParserError.parseError("Unexpected className found parsing IDEActivityLogMessage \(className)")
     }
 
     private func parseLogSectionAttachment(iterator: inout IndexingIterator<[Token]>)
@@ -421,10 +490,10 @@ public class ActivityParser {
                                                   "IDEActivityLogSectionAttachment \(classRefToken)")
             }
 
-            if className == "IDEFoundation.\(String(describing: IDEActivityLogSectionAttachment.self))" {
+            if className == ClassNames.ideActivityLogSectionAttachment {
                 let identifier = try parseAsString(token: iterator.next())
-                switch identifier.components(separatedBy: "ActivityLogSectionAttachment.").last {
-                case .some("TaskMetrics"):
+                switch Self.attachmentKind(of: identifier) {
+                case "TaskMetrics":
                     let jsonType = IDEActivityLogSectionAttachment.BuildOperationTaskMetrics.self
                     return try IDEActivityLogSectionAttachment(identifier: identifier,
                                                                majorVersion: try parseAsInt(token: iterator.next()),
@@ -433,7 +502,7 @@ public class ActivityParser {
                                                                                          type: jsonType),
                                                                buildOperationMetrics: nil,
                                                                 backtrace: nil)
-                case .some("TaskBacktrace"):
+                case "TaskBacktrace":
                     let jsonType = IDEActivityLogSectionAttachment.BuildOperationTaskBacktrace.self
                     return try IDEActivityLogSectionAttachment(identifier: identifier,
                                                                majorVersion: try parseAsInt(token: iterator.next()),
@@ -442,7 +511,7 @@ public class ActivityParser {
                                                                buildOperationMetrics: nil,
                                                                backtrace: try parseAsJson(token: iterator.next(),
                                                                                          type: jsonType))
-                case .some("BuildOperationMetrics"):
+                case "BuildOperationMetrics":
                     return try IDEActivityLogSectionAttachment(identifier: identifier,
                                                                majorVersion: try parseAsInt(token: iterator.next()),
                                                                minorVersion: try parseAsInt(token: iterator.next()),
@@ -456,6 +525,33 @@ public class ActivityParser {
                 }
             }
             throw XCLogParserError.parseError("Unexpected className found parsing IDEConsoleItem \(className)")
+    }
+
+    /// The attachment kind at the end of a section-attachment identifier.
+    ///
+    /// This is exactly `identifier.components(separatedBy: separator).last`, minus the array that
+    /// call allocated to hand back only its final element - one allocation per attachment, and
+    /// attachments are the bulk of a large log. Both edge cases of that expression are preserved
+    /// deliberately, because neither it nor a plain `hasSuffix` is a superset of the other:
+    ///
+    /// - separator absent: the whole string is the single component, so a bare `"TaskMetrics"`
+    ///   matches. `hasSuffix(separator + "TaskMetrics")` would reject it. Kept via the `guard`'s
+    ///   fallthrough to `identifier[...]`.
+    /// - separator present: only the text *after the last* occurrence counts, so `"FooTaskMetrics"`
+    ///   does not match `"TaskMetrics"`. A bare `hasSuffix("TaskMetrics")` would accept it.
+    ///
+    /// Measured 2026-08-04 over both benchmark logs (`Benchmarks/Logs`): 12,731 attachments in
+    /// baseline-noflags-14mb and 11,762 in flagged-10x-fleet, and every one of them carried the
+    /// identifier `com.apple.dt.ActivityLogSectionAttachment.TaskMetrics`. All test fixtures use
+    /// the same fully-qualified `com.apple.dt.ActivityLogSectionAttachment.<Kind>` form. So no
+    /// observed identifier exercises either edge case - they are retained to keep this a pure
+    /// rewrite rather than because real logs are known to need them.
+    private static func attachmentKind(of identifier: String) -> Substring {
+        let separator = "ActivityLogSectionAttachment."
+        guard let range = identifier.range(of: separator, options: .backwards) else {
+            return identifier[...]
+        }
+        return identifier[range.upperBound...]
     }
 
     private func parseLogSection(iterator: inout IndexingIterator<[Token]>)
@@ -472,21 +568,19 @@ public class ActivityParser {
                 throw XCLogParserError.parseError("Unexpected token found parsing " +
                                                   "IDEActivityLogSection \(classRefToken)")
         }
-        if className == String(describing: IDEActivityLogSection.self) {
+        switch className {
+        case ClassNames.ideActivityLogSection,
+             ClassNames.ideCommandLineBuildLog,
+             ClassNames.ideActivityLogMajorGroupSection,
+             ClassNames.ideActivityLogCommandInvocationSection:
             return try parseIDEActivityLogSection(iterator: &iterator)
-        }
-        if className == "IDECommandLineBuildLog" ||
-            className == "IDEActivityLogMajorGroupSection" ||
-            className == "IDEActivityLogCommandInvocationSection" {
-            return try parseIDEActivityLogSection(iterator: &iterator)
-        }
-        if className == "IDEActivityLogUnitTestSection" {
+        case ClassNames.ideActivityLogUnitTestSection:
             return try parseIDEActivityLogUnitTestSection(iterator: &iterator)
-        }
-        if className == String(describing: DBGConsoleLog.self) {
+        case ClassNames.dbgConsoleLog:
             return try parseDBGConsoleLog(iterator: &iterator)
+        default:
+            throw XCLogParserError.parseError("Unexpected className found parsing IDEActivityLogSection \(className)")
         }
-        throw XCLogParserError.parseError("Unexpected className found parsing IDEActivityLogSection \(className)")
     }
 
     private func getClassRefToken(iterator: inout IndexingIterator<[Token]>) throws -> Token {
@@ -519,6 +613,7 @@ public class ActivityParser {
                 return []
             case .list(let count):
                 var sections = [IDEActivityLogSection]()
+                sections.reserveCapacity(Self.reservation(for: count))
                 for _ in 0..<count {
                     let section = try parseLogSection(iterator: &iterator)
                     sections.append(section)
@@ -548,6 +643,7 @@ public class ActivityParser {
                 return []
             case .list(let count):
                 var sections = [IDEActivityLogSectionAttachment]()
+                sections.reserveCapacity(Self.reservation(for: count))
                 for _ in 0..<count {
                     let section = try parseLogSectionAttachment(iterator: &iterator)
                     sections.append(section)
@@ -569,7 +665,7 @@ public class ActivityParser {
                 throw XCLogParserError.parseError("Unexpected token found parsing IDEConsoleItem \(classRefToken)")
             }
 
-            if className == String(describing: IDEConsoleItem.self) {
+            if className == ClassNames.ideConsoleItem {
                 return IDEConsoleItem(adaptorType: try parseAsInt(token: iterator.next()),
                                       content: try parseAsString(token: iterator.next()),
                                       kind: try parseAsInt(token: iterator.next()),
@@ -587,6 +683,7 @@ public class ActivityParser {
             return []
         case .list(let count):
             var items = [IDEConsoleItem]()
+            items.reserveCapacity(Self.reservation(for: count))
             for _ in 0..<count {
                 if let item = try parseIDEConsoleItem(iterator: &iterator) {
                     items.append(item)
@@ -606,7 +703,7 @@ public class ActivityParser {
                 "IDEActivityLogAnalyzerControlFlowStepEdge \(classRefToken)")
         }
 
-        if className == String(describing: IDEActivityLogAnalyzerControlFlowStepEdge.self) {
+        if className == ClassNames.ideActivityLogAnalyzerControlFlowStepEdge {
             return try parseIDEActivityLogAnalyzerControlFlowStepEdge(iterator: &iterator)
         }
         throw XCLogParserError.parseError("Unexpected className found parsing " +
@@ -623,6 +720,7 @@ public class ActivityParser {
             return []
         case .list(let count):
             var items = [IDEActivityLogAnalyzerControlFlowStepEdge]()
+            items.reserveCapacity(Self.reservation(for: count))
             for _ in 0..<count {
                 items.append(try parseStepEdge(iterator: &iterator))
             }
@@ -649,7 +747,7 @@ public class ActivityParser {
                 "IBMemberID \(classRefToken)")
         }
 
-        if className == String(describing: IBMemberID.self) {
+        if className == ClassNames.ibMemberID {
             return IBMemberID(memberIdentifier: try parseAsString(token: iterator.next()))
         }
         throw XCLogParserError.parseError("Unexpected className found parsing " +
@@ -687,10 +785,10 @@ public class ActivityParser {
         }
         switch token {
         case .json(let string):
-            guard let data = string.data(using: .utf8) else {
-                throw XCLogParserError.parseError("Unexpected JSON string \(string)")
-            }
-            return try JSONDecoder().decode(type, from: data)
+            // `Data(string.utf8)` rather than `string.data(using: .utf8)`: the latter returns an
+            // optional that cannot actually be nil for UTF-8 (every String is representable) and
+            // went through an extra copy to find that out. The decoder is reused - see `jsonDecoder`.
+            return try jsonDecoder.decode(type, from: Data(string.utf8))
         case .null:
             return nil
         default:
@@ -706,10 +804,8 @@ public class ActivityParser {
         }
         switch token {
         case .json(let string):
-            guard let data = string.data(using: .utf8) else {
-                throw XCLogParserError.parseError("Unexpected JSON string \(string)")
-            }
-            return try IDEActivityLogSectionAttachment.BuildOperationMetrics(from: data)
+            // See `parseAsJson` for why this is `Data(string.utf8)` and not `data(using:)`.
+            return try IDEActivityLogSectionAttachment.BuildOperationMetrics(from: Data(string.utf8))
         case .null:
             return nil
         default:
