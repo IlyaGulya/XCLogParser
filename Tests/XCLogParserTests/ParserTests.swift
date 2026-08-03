@@ -206,6 +206,93 @@ note: use 'updatedDoSomething' instead\r doSomething()\r        ^~~~~~~~~~~\r   
         XCTAssertEqual(detailsByLocation.count, 4)
     }
 
+    /// A notice's `detail` is its own diagnostic, not the whole section text.
+    ///
+    /// The section text is what classifies a notice, but it used to stay on as the payload too, so a
+    /// section was repeated once per notice in it - 1857 of 1858 MB of all `detail` on a real log. Both
+    /// notices below live in the same text and must come back with only their own lines.
+    func testNoticeDetailIsNarrowedToItsOwnDiagnostic() throws {
+        let timestamp = Date().timeIntervalSinceReferenceDate
+        // "\r" is the separator Xcode uses between diagnostic lines, which is what the lookup splits on.
+        let text = "/project/A.swift:10:11: warning: 'old()' is deprecated: use 'new()'\r        old()\r"
+            + "        ^\r/project/B.swift:20:21: warning: 'gone()' is deprecated: use 'here()'\r"
+            + "        gone()\r        ^\r"
+        func message(file: String, line: UInt64, column: UInt64, title: String) -> IDEActivityLogMessage {
+            let location = DVTTextDocumentLocation(documentURLString: "file://\(file)",
+                                                   timestamp: timestamp,
+                                                   // The parser reports these 1-based, so the location
+                                                   // holds one less than the text says.
+                                                   startingLineNumber: line - 1,
+                                                   startingColumnNumber: column - 1,
+                                                   endingLineNumber: line - 1,
+                                                   endingColumnNumber: column - 1,
+                                                   characterRangeEnd: 0,
+                                                   characterRangeStart: 0,
+                                                   locationEncoding: 0)
+            return IDEActivityLogMessage(title: title,
+                                         shortTitle: "",
+                                         timeEmitted: timestamp,
+                                         rangeEndInSectionText: 18446744073709551615,
+                                         rangeStartInSectionText: 0,
+                                         subMessages: [],
+                                         severity: 1,
+                                         type: "",
+                                         location: location,
+                                         categoryIdent: "",
+                                         secondaryLocations: [],
+                                         additionalDescription: "")
+        }
+        let fakeLog = getFakeIDEActivityLogWithMessages(
+            [message(file: "/project/A.swift", line: 10, column: 11,
+                     title: "'old()' is deprecated: use 'new()'"),
+             message(file: "/project/B.swift", line: 20, column: 21,
+                     title: "'gone()' is deprecated: use 'here()'")],
+            andText: text)
+        let build = try parser.parse(activityLog: fakeLog)
+
+        let warnings = build.warnings ?? []
+        XCTAssertEqual(2, warnings.count)
+        guard let first = warnings.first(where: { $0.documentURL.contains("A.swift") }),
+              let second = warnings.first(where: { $0.documentURL.contains("B.swift") }) else {
+            XCTFail("Expected one warning per file, got \(warnings.map { $0.documentURL })")
+            return
+        }
+        // Each detail carries its own diagnostic...
+        XCTAssertEqual(first.detail, "/project/A.swift:10:11: warning: 'old()' is deprecated: use 'new()'"
+            + "\n        old()\n        ^")
+        XCTAssertEqual(second.detail, "/project/B.swift:20:21: warning: 'gone()' is deprecated: use 'here()'"
+            + "\n        gone()\n        ^")
+        // ...and, the point of the change, not the other's or the whole text.
+        XCTAssertFalse(first.detail?.contains("gone()") ?? true)
+        XCTAssertFalse(second.detail?.contains("old()") ?? true)
+    }
+
+    /// A notice with no location of its own keeps the whole section text.
+    ///
+    /// The counterpart to the test above: "Building targets in dependency order" and friends have no
+    /// file:line to look up, and their section text is not a per-file diagnostic, so narrowing it would
+    /// drop the only information there is.
+    func testNoticeWithoutLocationKeepsWholeSectionText() throws {
+        let timestamp = Date().timeIntervalSinceReferenceDate
+        let noteMessage = IDEActivityLogMessage(title: "Building targets in dependency order",
+                                                shortTitle: "",
+                                                timeEmitted: timestamp,
+                                                rangeEndInSectionText: 18446744073709551615,
+                                                rangeStartInSectionText: 0,
+                                                subMessages: [],
+                                                severity: 0,
+                                                type: "",
+                                                location: DVTDocumentLocation(documentURLString: "",
+                                                                              timestamp: timestamp),
+                                                categoryIdent: "",
+                                                secondaryLocations: [],
+                                                additionalDescription: "")
+        let text = "Target dependency graph (3 targets)"
+        let fakeLog = getFakeIDEActivityLogWithMessages([noteMessage], andText: text)
+        let build = try parser.parse(activityLog: fakeLog)
+        XCTAssertEqual(text, build.notes?.first?.detail)
+    }
+
     func testParseInterfaceBuilderWarning() throws {
         let timestamp = Date().timeIntervalSinceReferenceDate
         let memberId = IBMemberID(memberIdentifier: "ABC")
