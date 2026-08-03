@@ -23,11 +23,21 @@ public struct Suffix {
 
     let suffix: String
 
+    /// The lowercased pattern's UTF-8 bytes, when the pattern is pure ASCII.
+    /// `nil` for non-ASCII patterns, which always take the Unicode slow path.
+    private let asciiSuffix: [UInt8]?
+
     public init(_ suffix: String) {
         self.suffix = suffix.lowercased()
+        self.asciiSuffix = CaseFolding.asciiBytes(of: self.suffix)
     }
 
+    /// See `CaseFolding` for why the ASCII fast path is behaviour-preserving.
     private func match(_ input: String) -> Bool {
+        if let asciiSuffix = asciiSuffix,
+           let fast = CaseFolding.asciiHasSuffix(asciiSuffix, input: input) {
+            return fast
+        }
         return input.lowercased().hasSuffix(suffix)
     }
 }
