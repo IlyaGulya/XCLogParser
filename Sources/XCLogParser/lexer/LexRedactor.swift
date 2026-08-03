@@ -42,7 +42,7 @@ public class LexRedactor: LogRedactor {
         } else {
             guard let firstMatch = regex.firstMatch(in: string,
                                                     options: [],
-                                                    range: NSRange(location: 0, length: string.count)) else {
+                                                    range: NSRange(location: 0, length: string.utf16.count)) else {
                 return string
             }
             let userDir = string.substring(firstMatch.range)

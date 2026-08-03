@@ -243,7 +243,7 @@ public final class ParserBuildSteps {
         guard let schemaRegexp = schemeRegexp else {
             return schema
         }
-        let range = NSRange(location: 0, length: title.count)
+        let range = NSRange(location: 0, length: title.utf16.count)
         let matches = schemaRegexp.matches(in: title, options: .reportCompletion, range: range)
         guard let match = matches.first else {
             return schema
@@ -271,7 +271,7 @@ public final class ParserBuildSteps {
         guard let targetRegexp = targetRegexp else {
             return text
         }
-        let range = NSRange(location: 0, length: text.count)
+        let range = NSRange(location: 0, length: text.utf16.count)
         let matches = targetRegexp.matches(in: text, options: .reportCompletion, range: range)
         guard let match = matches.first, match.numberOfRanges == 3 else {
             return text
@@ -295,7 +295,7 @@ public final class ParserBuildSteps {
     }
 
     private func parseArchitectureFromCommand(command: String, regexp: NSRegularExpression) -> String {
-        let range = NSRange(location: 0, length: command.count)
+        let range = NSRange(location: 0, length: command.utf16.count)
         let matches = regexp.matches(in: command, options: .reportCompletion, range: range)
         guard let match = matches.first else {
             return ""

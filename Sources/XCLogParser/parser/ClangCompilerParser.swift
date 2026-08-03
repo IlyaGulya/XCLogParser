@@ -38,7 +38,7 @@ public class ClangCompilerParser {
         }
 
         let text = logSection.text
-        let range = NSRange(location: 0, length: text.count)
+        let range = NSRange(location: 0, length: text.utf16.count)
         let matches = regex.matches(in: text, options: .reportProgress, range: range)
         guard let fileRange = matches.first?.range(at: 1) else {
             return nil
@@ -94,7 +94,7 @@ public class ClangCompilerParser {
         }
 
         let text = logSection.text
-        let range = NSRange(location: 0, length: text.count)
+        let range = NSRange(location: 0, length: text.utf16.count)
         let totalTimePattern = "ld total time:\\s*(.*?) milliseconds \\(\\s*(.*?)%\\)\\r"
         let totalTime = parseTimeAndPercentage(text, range, totalTimePattern)
 
