@@ -65,6 +65,28 @@ public enum NoticeType: String, Codable {
     /// Failed command error (e.g. ValidateEmbeddedBinary, CodeSign)
     case failedCommandError
 
+    /// The `Prefix`/`Suffix`/`Contains` matchers used by `fromTitle`, built once.
+    ///
+    /// These used to be written inline as `case Prefix("Lexical"):`, which reads well but means the
+    /// struct is *constructed on every call* - and each one's initializer lowercases its pattern and
+    /// builds a `[UInt8]` of it. Since every pattern is a string literal that never changes, that
+    /// was ~86,000 throwaway arrays on the flagged benchmark log (37.6% of all array growth,
+    /// attributed to `CaseFolding.asciiBytes` under `NoticeType.fromTitle`).
+    ///
+    /// Hoisting them changes nothing about matching: `~=` still does the comparison against values
+    /// identical to the ones the inline expressions produced.
+    private enum Patterns {
+        static let lexical = Prefix("Lexical")
+        static let semanticIssue = Suffix("Semantic Issue")
+        static let deprecations = Suffix("Deprecations")
+        static let error = Suffix("Error")
+        static let notice = Suffix("Notice")
+        static let ibtoolWarnings = Prefix("/* com.apple.ibtool.document.warnings */")
+        static let phaseScriptExecution = Contains("Command PhaseScriptExecution")
+        static let swiftc = Prefix("error: Swiftc")
+        static let nonzeroExit = Suffix("failed with a nonzero exit code")
+    }
+
     // swiftlint:disable:next cyclomatic_complexity
     public static func fromTitle(_ title: String) -> NoticeType? {
         switch title {
@@ -74,25 +96,25 @@ public enum NoticeType: String, Codable {
             return .note
         case "Swift Compiler Error":
             return .swiftError
-        case Prefix("Lexical"), Suffix("Semantic Issue"), "Parse Issue", "Uncategorized":
+        case Patterns.lexical, Patterns.semanticIssue, "Parse Issue", "Uncategorized":
             return .clangError
-        case Suffix("Deprecations"):
+        case Patterns.deprecations:
             return .deprecatedWarning
         case "Warning", "Apple Mach-O Linker Warning", "Target Integrity":
             return .projectWarning
-        case Suffix("Error"):
+        case Patterns.error:
             return .error
-        case Suffix("Notice"):
+        case Patterns.notice:
             return .note
-        case Prefix("/* com.apple.ibtool.document.warnings */"):
+        case Patterns.ibtoolWarnings:
             return .interfaceBuilderWarning
         case "Package Loading":
             return .packageLoadingError
-        case Contains("Command PhaseScriptExecution"):
+        case Patterns.phaseScriptExecution:
             return .scriptPhaseError
-        case Prefix("error: Swiftc"):
+        case Patterns.swiftc:
             return .swiftError
-        case Suffix("failed with a nonzero exit code"):
+        case Patterns.nonzeroExit:
             return .failedCommandError
         default:
             return .note
