@@ -183,9 +183,18 @@ public final class Lexer {
             print("error parsing classNameRef")
             return nil
         }
+        // Bounds-checked because the index comes from the log, not from us. `classNames` is populated by
+        // the `className` tokens seen so far, so a malformed document can reference an entry that does
+        // not exist - a payload of `0` gives -1, and any index past the declarations is out of range.
+        // Subscripting directly crashed the process with "Index out of range"; returning nil reports it
+        // as an invalid line, which is how every other malformed payload here behaves. Found by
+        // differential testing over generated SLF documents ("SLF01@356098f239dfc041^" is enough).
         let element = value - 1
-        let className = classNames[element]
-        return .classNameRef(className)
+        guard classNames.indices.contains(element) else {
+            print("error parsing classNameRef: no class name at index \(value)")
+            return nil
+        }
+        return .classNameRef(classNames[element])
     }
 
     private func handleStringTokenTypeCase(scanner: Scanner,

@@ -151,7 +151,7 @@ extension Notice {
         guard let clangWarningRegexp = Notice.clangWarningRegexp else {
             return nil
         }
-        let range = NSRange(location: 0, length: text.count)
+        let range = NSRange(location: 0, length: text.utf16.count)
         let matches = clangWarningRegexp.matches(in: text, options: .reportCompletion, range: range)
         return matches.map { result -> String in
             String(text.substring(result.range))
