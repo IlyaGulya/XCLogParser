@@ -21,18 +21,40 @@ import Foundation
 
 extension IDEActivityLogSection {
 
+    private static let inTargetBytes = Array("in target '".utf8)
+    private static let fromProjectBytes = Array("' from project '".utf8)
+
     /// Returns the name of the target inside the `commandDetailDesc`
     /// - returns: The name of the target or nil if there is no target name in `commandDetailDesc`
     func getTargetFromCommand() -> String? {
-        // The markers can appear out of order - e.g. "' from project 'in target 'App" - and slicing with
-        // the resulting reversed range traps. Returning nil means the same thing as "no target found" to
-        // every caller here.
-        guard let startIndex = commandDetailDesc.range(of: "in target '"),
-            let endIndex = commandDetailDesc.range(of: "' from project '"),
-            startIndex.upperBound <= endIndex.lowerBound else {
+        // Byte-wise search to avoid two Foundation `range(of:)` scans per section, which across
+        // their call sites were a significant share of parse samples. This also skips the second
+        // search when the first marker is absent, which the original did not - both `guard`
+        // conditions were evaluated eagerly.
+        switch CaseFolding.asciiRange(of: Self.inTargetBytes, input: commandDetailDesc) {
+        case .notFound:
+            return nil
+        case .found(let startRange):
+            guard case .found(let endRange) =
+                    CaseFolding.asciiRange(of: Self.fromProjectBytes, input: commandDetailDesc) else {
                 return nil
+            }
+            let utf8 = commandDetailDesc.utf8
+            // Carries over the out-of-order marker check from the byte offsets' equivalent on Strings.
+            guard startRange.upperBound <= endRange.lowerBound else {
+                return nil
+            }
+            let start = utf8.index(utf8.startIndex, offsetBy: startRange.upperBound)
+            let end = utf8.index(utf8.startIndex, offsetBy: endRange.lowerBound)
+            return String(decoding: utf8[start..<end], as: UTF8.self)
+        case .notAscii:
+            guard let startIndex = commandDetailDesc.range(of: "in target '"),
+                let endIndex = commandDetailDesc.range(of: "' from project '"),
+                startIndex.upperBound <= endIndex.lowerBound else {
+                    return nil
+            }
+            return String(commandDetailDesc[startIndex.upperBound..<endIndex.lowerBound])
         }
-        return String(commandDetailDesc[startIndex.upperBound..<endIndex.lowerBound])
     }
 
     /// Returns the Log with the subsections grouped in their Target
