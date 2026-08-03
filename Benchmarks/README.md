@@ -343,7 +343,7 @@ are testing** before reading "identical" as "correct".
 
 The first version of that scanner deferred to the regex whenever it saw a
 non-ASCII byte *anywhere* in the section text, on the reasoning that real
-diagnostics are ASCII. They are — 99.974% of bytes in a 278 MB log. But the
+diagnostics are ASCII. They are — 99.974% of bytes in a 278MB fleet log. But the
 remaining 0.026% were spread widely enough that nearly every section contained
 one, so nearly every section still went through ICU: re-profiling showed the
 regex still at 22.8% of samples, barely moved.

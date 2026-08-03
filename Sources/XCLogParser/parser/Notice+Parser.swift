@@ -153,6 +153,9 @@ extension Notice {
     /// - parameter text: IDELogSection text property
     /// - returns: A list of clang warning flags found in the text, like -Wunused-function
     private static func parseClangWarningFlags(text: String) -> [String]? {
+        if let fast = asciiClangWarningFlags(text: text) {
+            return fast
+        }
         guard let clangWarningRegexp = Notice.clangWarningRegexp else {
             return nil
         }
