@@ -219,8 +219,14 @@ public final class ParserBuildSteps {
             return step
     }
 
+    /// Formats a section date without `DateFormatter`.
+    ///
+    /// Byte-for-byte identical to `dateFormatter.string(from:)` for the format
+    /// that property is configured with. See `ISO8601DateString` for why the
+    /// formatter is bypassed here and what the equivalence rests on. The
+    /// `dateFormatter` property itself stays public and unchanged.
     private func toDate(timeInterval: Double) -> String {
-        return dateFormatter.string(from: Date(timeIntervalSinceReferenceDate: timeInterval))
+        return ISO8601DateString.format(timeIntervalSinceReferenceDate: timeInterval)
     }
 
     private func toTimestampSince1970(timeInterval: Double) -> Double {
