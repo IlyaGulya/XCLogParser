@@ -186,18 +186,36 @@ extension Notice {
         }
     }
 
+    private static let deprecatedFlagNeedle = ExactNeedle("-Wdeprecated")
+
+    /// The deprecation phrases, in the original order. `deprecated` is the byte
+    /// every one of them shares, which is what makes the pre-check below sound.
+    private static let deprecatedNeedles = [
+        ExactNeedle(" deprecated:"),
+        ExactNeedle("was deprecated in"),
+        ExactNeedle("has been deprecated"),
+        ExactNeedle("is deprecated")
+    ]
+
+    /// The substring common to all four phrases above.
+    private static let deprecatedSubstringNeedle = ExactNeedle("deprecated")
+
     private static func isDeprecatedWarning(type: NoticeType, text: String, clangFlags: String?) -> Bool {
         // Mark clang deprecated flags (https://clang.llvm.org/docs/DiagnosticsReference.html)
-        if let clangFlags = clangFlags, clangFlags.contains("-Wdeprecated") {
+        if let clangFlags = clangFlags, deprecatedFlagNeedle.matches(clangFlags) {
             return true
         }
         // Support for Swift and ObjC code marked as deprecated
         if type == .swiftError || type == .swiftWarning || type == .projectWarning || type == .clangWarning
             || type == .note {
-            return text.contains(" deprecated:")
-                || text.contains("was deprecated in")
-                || text.contains("has been deprecated")
-                || text.contains("is deprecated")
+            // Every phrase contains "deprecated", so a single scan for it rules out
+            // all four at once. Almost no diagnostic mentions deprecation, so this
+            // replaces four whole-string searches with one on the common path.
+            // `range(of:)`/`contains` at these call sites was 11.46% of samples.
+            guard deprecatedSubstringNeedle.matches(text) else {
+                return false
+            }
+            return deprecatedNeedles.contains { $0.matches(text) }
         }
         return false
     }

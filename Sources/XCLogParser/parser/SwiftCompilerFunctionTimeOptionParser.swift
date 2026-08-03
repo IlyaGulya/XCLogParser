@@ -24,9 +24,10 @@ import Foundation
 class SwiftCompilerFunctionTimeOptionParser: SwiftCompilerTimeOptionParser {
 
     private static let compilerFlag = "-debug-time-function-bodies"
+    private static let compilerFlagNeedle = ExactNeedle(compilerFlag)
 
     func hasCompilerFlag(commandDesc: String) -> Bool {
-        commandDesc.range(of: Self.compilerFlag) != nil
+        Self.compilerFlagNeedle.matches(commandDesc)
     }
 
     func parse(from commands: [String: Int]) -> [String: [SwiftFunctionTime]] {

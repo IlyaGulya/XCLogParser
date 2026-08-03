@@ -181,11 +181,14 @@ public class ClangCompilerParser {
             wroteOutputFileBytes: totalFileBytes)
     }
 
+    private static let timeTraceNeedle = ExactNeedle(timeTraceCompilerFlag)
+    private static let printStatisticsNeedle = ExactNeedle(printStatisticsLinkerFlag)
+
     func hasTimeTraceCompilerFlag(commandDesc: String) -> Bool {
-        commandDesc.range(of: Self.timeTraceCompilerFlag) != nil
+        Self.timeTraceNeedle.matches(commandDesc)
     }
 
     func hasPrintStatisticsLinkerFlag(commandDesc: String) -> Bool {
-        commandDesc.range(of: Self.printStatisticsLinkerFlag) != nil
+        Self.printStatisticsNeedle.matches(commandDesc)
     }
 }

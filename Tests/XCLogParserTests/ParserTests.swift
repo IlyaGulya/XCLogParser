@@ -269,6 +269,38 @@ note: use 'updatedDoSomething' instead\r doSomething()\r        ^~~~~~~~~~~\r   
         XCTAssertEqual(parsedTarget, "ServicesPlist")
     }
 
+    /// Regression: when the two markers appear in reverse order the resulting
+    /// range is reversed, and subscripting a `String` with it traps. Found by a
+    /// differential audit; the input needs no target name to trigger it.
+    func testGetTargetFromCommandWithReversedMarkersDoesNotCrash() {
+        for command in ["' from project 'in target '",
+                        "' from project 'P' ... in target 'App",
+                        "\u{036F}' from project 'in target '"] {
+            let section = IDEActivityLogSection(sectionType: 1,
+                                                domainType: "",
+                                                title: "",
+                                                signature: "",
+                                                timeStartedRecording: 0,
+                                                timeStoppedRecording: 0,
+                                                subSections: [],
+                                                text: "",
+                                                messages: [],
+                                                wasCancelled: false,
+                                                isQuiet: false,
+                                                wasFetchedFromCache: false,
+                                                subtitle: "",
+                                                location: DVTDocumentLocation(documentURLString: "",
+                                                                              timestamp: 0),
+                                                commandDetailDesc: command,
+                                                uniqueIdentifier: "ABC",
+                                                localizedResultString: "",
+                                                xcbuildSignature: "",
+                                                attachments: [],
+                                                unknown: 0)
+            XCTAssertNil(section.getTargetFromCommand(), "input=\(command.debugDescription)")
+        }
+    }
+
     let command = """
     PhaseScriptExecution Services.plist /Users/spotify-buildagent/buildAgent/work/6878303d676e66/
     build/DerivedData/Build/Intermediates.noindex/
