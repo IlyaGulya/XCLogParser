@@ -207,4 +207,126 @@ class LexerTests: XCTestCase {
                            "disagreed on byte 0x\(String(byte, radix: 16))")
         }
     }
+
+    // MARK: - tokenize(bytes:) agrees with tokenize(contents:)
+
+    /// The bytes entry point exists so a real log never has to become a `String` first, which cost a full
+    /// extra copy of the log. It must produce exactly the same tokens.
+    func testTokenizeBytesMatchesTokenizeContentsOnFixtures() throws {
+        let fixtures = [
+            "SLF09#",
+            "SLF09#21%IDEActivityLogSection",
+            "SLF09#21%IDEActivityLogSection1@",
+            "SLF09#21%IDEActivityLogSection1@39\"Xcode.IDEActivityLogDomainType.BuildLog",
+            "SLF0#\("➜ Sources/Bundle+Locali🙂".utf8.count)\"➜ Sources/Bundle+Locali🙂1#",
+            "SLF09#21%IDEActivityLogSection1@38\"##Xcode.IDEActivityLogDomainType.Build356098f239dfc0^-242(",
+            "SLF0356098f239dfc041^",
+            "SLF0-242(",
+            // A classNameRef with no className declared, which used to crash the process on an
+            // out-of-range subscript; see handleClassNameRefTokenTypeCase. Both entry points must now
+            // fail on it identically.
+            "SLF01@356098f239dfc041^",
+            "SLF09#21%IDEActivityLogSection0@",
+            "SLF0"
+        ]
+        // `try?` rather than `try`: some of these are deliberately malformed, and what matters is that
+        // both entry points agree - including agreeing to fail. The reject test below checks that a
+        // failure on one side is a failure on the other, so a silent nil == nil cannot pass vacuously.
+        for contents in fixtures {
+            let fromString = try? lexer.tokenize(contents: contents,
+                                                 redacted: false,
+                                                 withoutBuildSpecificInformation: false)
+            let fromBytes = try? lexer.tokenize(bytes: Array(contents.utf8),
+                                                redacted: false,
+                                                withoutBuildSpecificInformation: false)
+            let fromData = try? lexer.tokenize(data: Data(contents.utf8),
+                                               redacted: false,
+                                               withoutBuildSpecificInformation: false)
+            XCTAssertEqual(fromString, fromBytes, "disagreed on \(contents.debugDescription)")
+            XCTAssertEqual(fromBytes, fromData, "data disagreed on \(contents.debugDescription)")
+        }
+    }
+
+    /// Redaction and build-information stripping run on the scanned text, so they are exercised through
+    /// both entry points too.
+    func testTokenizeBytesMatchesTokenizeContentsWhenRewriting() throws {
+        let contents = "SLF09#21%IDEActivityLogSection1@36\"Compile /Users/myuser/project/File.m"
+        for (redacted, stripped) in [(true, false), (false, true), (true, true)] {
+            let fromString = try lexer.tokenize(contents: contents,
+                                                redacted: redacted,
+                                                withoutBuildSpecificInformation: stripped)
+            let fromBytes = try lexer.tokenize(bytes: Array(contents.utf8),
+                                               redacted: redacted,
+                                               withoutBuildSpecificInformation: stripped)
+            let fromData = try lexer.tokenize(data: Data(contents.utf8),
+                                              redacted: redacted,
+                                              withoutBuildSpecificInformation: stripped)
+            XCTAssertEqual(fromString, fromBytes,
+                           "disagreed with redacted: \(redacted), stripped: \(stripped)")
+            XCTAssertEqual(fromBytes, fromData,
+                           "data disagreed with redacted: \(redacted), stripped: \(stripped)")
+        }
+    }
+
+    /// The tokens must outlive the buffer they were scanned from.
+    ///
+    /// Malformed input must fail identically through both entry points, rather than one throwing and the
+    /// other returning partial tokens.
+    func testTokenizeBytesRejectsWhatTokenizeContentsRejects() {
+        for contents in ["SLF09#21%IDEActivityLogSection1@39\"Xcode.IDEActivityLogDomainType." +
+                         "BuildLog356098f239dfc041^-242=",
+                         "XXXX9#",
+                         "SLF09#="] {
+            var stringThrew = false
+            var bytesThrew = false
+            do {
+                _ = try lexer.tokenize(contents: contents,
+                                       redacted: false,
+                                       withoutBuildSpecificInformation: false)
+            } catch {
+                stringThrew = true
+            }
+            do {
+                _ = try lexer.tokenize(bytes: Array(contents.utf8),
+                                       redacted: false,
+                                       withoutBuildSpecificInformation: false)
+            } catch {
+                bytesThrew = true
+            }
+            XCTAssertEqual(stringThrew, bytesThrew, "disagreed on \(contents.debugDescription)")
+        }
+    }
+
+    /// Generated SLF documents, so agreement does not rest on the handful of shapes written by hand.
+    func testTokenizeBytesMatchesTokenizeContentsOnGeneratedInput() throws {
+        // A fixed seed rather than a random one: a failure has to be reproducible.
+        var state: UInt64 = 0x2545_F491_4F6C_DD1D
+        func next(_ bound: Int) -> Int {
+            state ^= state << 13
+            state ^= state >> 7
+            state ^= state << 17
+            return Int(state % UInt64(bound))
+        }
+        // Includes non-ASCII and a delimiter inside a string payload, both of which are where a
+        // byte-oriented and a String-oriented reader could diverge.
+        let payloads = ["9#", "21%IDEActivityLogSection", "1@", "-242(", "356098f239dfc041^",
+                        "5\"héllo", "4\"a#b(", "0\"", "6\"🙂🙂"]
+        for _ in 0..<2_000 {
+            var contents = "SLF0"
+            for _ in 0..<next(6) {
+                contents += payloads[next(payloads.count)]
+            }
+            let fromString = try? lexer.tokenize(contents: contents,
+                                                 redacted: false,
+                                                 withoutBuildSpecificInformation: false)
+            let fromBytes = try? lexer.tokenize(bytes: Array(contents.utf8),
+                                                redacted: false,
+                                                withoutBuildSpecificInformation: false)
+            let fromData = try? lexer.tokenize(data: Data(contents.utf8),
+                                               redacted: false,
+                                               withoutBuildSpecificInformation: false)
+            XCTAssertEqual(fromString, fromBytes, "disagreed on \(contents.debugDescription)")
+            XCTAssertEqual(fromBytes, fromData, "data disagreed on \(contents.debugDescription)")
+        }
+    }
 }

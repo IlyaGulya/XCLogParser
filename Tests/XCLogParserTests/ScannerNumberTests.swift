@@ -26,8 +26,9 @@ import XCTest
 class ScannerNumberTests: XCTestCase {
 
     private func parse(_ text: String, radix: UInt64) -> UInt64? {
-        let scanner = XCLogParser.Scanner(string: text)
-        return scanner.unsignedInteger(in: 0..<text.utf8.count, radix: radix)
+        return XCLogParser.Scanner.withScanner(string: text) {
+            $0.unsignedInteger(in: 0..<text.utf8.count, radix: radix)
+        }
     }
 
     private func assertAgrees(_ text: String, radix: Int,
@@ -98,8 +99,9 @@ class ScannerNumberTests: XCTestCase {
 
     /// The empty range is how a value with no payload shows up, and it must not parse as zero.
     func testEmptyRangeIsRejected() {
-        let scanner = XCLogParser.Scanner(string: "123")
-        XCTAssertNil(scanner.unsignedInteger(in: 0..<0))
+        XCLogParser.Scanner.withScanner(string: "123") {
+            XCTAssertNil($0.unsignedInteger(in: 0..<0))
+        }
     }
 }
 
