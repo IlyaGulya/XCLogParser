@@ -265,6 +265,151 @@ including all 112 combining marks in U+0300–U+036F) is what kept those rewrite
 honest — and it caught two real bugs that the project's own unit test, which
 asserts only a dictionary's `count`, would have passed.
 
+## Measuring memory: peak RSS cannot do it
+
+`/usr/bin/time -l`'s "maximum resident set size" is unusable for this project.
+Three runs of the *same unchanged binary* on the 265 MB log:
+
+    1769 MB    1918 MB    1750 MB
+
+That is ±10% (~170 MB) run to run with no code change, which hides every change
+worth making — the whole token array is 35 MB.
+
+It does not merely fail to resolve small changes, it reports them backwards.
+Removing a dead field that held the entire log measured RSS going **up 4%**
+(1746 → 1820 MB). Both figures were noise.
+
+`phys_footprint` (`TASK_VM_INFO`) is roughly **70× quieter**. Five runs of
+unchanged code, per stage, over a pre-read baseline:
+
+| stage | spread over 5 runs |
+|---|---|
+| Gunzip | 0.1 MB |
+| UTF-8 decode | 0.0 MB |
+| Tokenize | 0.1 MB |
+| Parse IDEActivityLog | 0.1 MB |
+| peak | 2.6 MB (0.18%) |
+
+Timing over those same runs varied 179–204 ms, so this is a genuinely quieter
+metric and not a quiet machine. `xclogparser-bench --warmup 0` prints it.
+
+### Two traps, both of which produced a wrong answer first
+
+**`phys_footprint` never comes back down.** Released memory goes back to the
+malloc zone, not to the kernel, so each iteration reads a *cumulative* high-water
+mark rather than its own cost. Across five iterations the `read` stage reported:
+
+    15.9 MB   -25.4 MB   583.1 MB   759.2 MB   1029.4 MB
+
+A negative reading is the tell. Only the first pass over a fresh heap measures
+one iteration; for another sample, repeat the **process**, not the loop. This is
+why `--warmup 0` is required for memory, and why the benchmark refuses to print
+footprints at all when a warmup ran rather than printing numbers that look fine.
+
+**The median of three hid it completely.** Running `-n 3` gave per-stage medians
+that agreed to ±1 MB across runs and looked like a working metric. They agreed
+because the median of three always returns iteration 2 — the metric was stable
+only in the sense of being consistently the same wrong number, and it would have
+silently changed meaning with `-n 4`. An aggregate that looks stable is not
+evidence the underlying samples are; look at the raw per-iteration values.
+
+### What it immediately showed
+
+With a metric that resolves 35 MB, the per-stage table says where the memory is
+(265 MB log, 15.9 MB compressed):
+
+    Read file                 0.2 MB      +0.2 MB
+    Gunzip                  270.4 MB    +270.2 MB
+    UTF-8 decode            567.7 MB    +297.3 MB
+    Tokenize (Lexer)       1164.6 MB    +596.9 MB
+    Parse IDEActivityLog   1399.7 MB    +235.1 MB
+    Parse BuildStep tree   1429.1 MB     +29.3 MB
+
+Peak is **5.4× the uncompressed input**, and the decode step alone costs ~1.1× the
+log to turn `Data` the process already holds into a `String`.
+
+It also settled a question the old metric got wrong: removing the dead
+`Scanner.string` field changes memory by **0.0 MB** (tokenize 1164.5–1164.6 MB,
+unchanged). Swift `String` is copy-on-write, so that field was a retain of a
+string the caller already holds alive — dead code worth deleting, but never the
+265 MB it looked like. Report memory in absolute units for the same reason time
+shares are misleading: a change to the total moves every other stage's share.
+
+## Duplicate values in the output are not duplicated memory
+
+Counting repeated values in the parsed JSON is an easy way to find apparent waste,
+and it was wrong every single time it was tried here:
+
+| claim, from output counting | actual, measured |
+|---|---|
+| `Scanner.string` holds a 265 MB copy of the log | **0.0 MB** |
+| 124,179 `classNameRef` tokens copy ~160 distinct names | **≤8.4 MB** |
+| `buildIdentifier`/`machineName`: 42,148 uses of 1 value | **≤9 MB** |
+
+Swift `String` is copy-on-write, so passing one around is a retain, not a copy of
+its bytes. Handing the same stored property to 42,148 structs allocates one string,
+not 42,148 — and 21–45 byte class names are past the small-string limit, so this is
+real COW sharing rather than an artifact of short strings.
+
+### The two-line check that settles it
+
+Rather than building a deduplicating interner and hoping, defeat COW at the call
+site and see whether memory moves:
+
+```swift
+// forces a genuine independent copy
+String(decoding: Array(value.utf8), as: UTF8.self)
+```
+
+Then `xclogparser-bench <log> -n 1 --warmup 0`. If forcing real copies does not make
+things measurably worse, the values were already shared and deduplicating them
+cannot make things better. That experiment is how all three rows above were closed,
+and it costs minutes rather than the days an interner would.
+
+The corollary is that a ratio like "776 references per declaration" is evidence about
+the *log format*, not about memory. Get a number from the metric before believing it.
+
+### The opposite trap: a cost that is real but not removable
+
+A ceiling probe can also come back *positive* and still not justify the work. The
+lexer's per-token `String`s were measured, by replacing every scanned payload with a
+shared constant, at **295 MB and half the tokenize time** — a real cost, unlike the
+three rows above. The conclusion "so make `Token` carry a byte range instead" was
+still wrong.
+
+Those strings are not a duplicate of the input; they *are* the parsed model's
+storage. `IDEActivityLogSection` stores plain `String` fields assigned straight from
+`ActivityParser.parseAsString`, whose only transform is `trimmingCharacters` — and
+that returns the same buffer when there is nothing to trim. On the flagged log only
+44,215 of 394,106 string tokens (11.2%) would be trimmed, so ~89% of the 258 MB is
+shared with the model, not copied.
+
+The forced-copy check confirms it from the other direction: giving every string token
+private storage moved the footprint 649.3 → 684.7 MB, **+35 MB**, not +258 MB. Had the
+strings been a redundant copy, forcing real ones would have cost the full 258 MB.
+
+So a range-based `Token` would remove 258 MB from the lexer and oblige the parser to
+build ~230 MB of it straight back, because the model needs real `String`s. That is
+moving an allocation, not deleting one.
+
+**Ask who else holds the value before removing an allocation.** A cost that is real,
+and even dominant in its own stage, is only worth removing if nothing downstream needs
+it materialised anyway.
+
+### Two probes that produced confident wrong answers
+
+Both of these ran here and had to be thrown out:
+
+- **"Free it and watch memory fall."** Dropping all 1.45M tokens reported 0.0 MB
+  reclaimed, which reads as proof the model owns everything independently. A control
+  that allocated *and freed a known-dead 300 MB blob* reported 0.0 MB too —
+  `phys_footprint` never decreases. Sharing must be measured as growth in a fresh
+  process, never as shrinkage in a live one. Always run the control.
+- **Neutering payloads through the whole pipeline.** `ActivityParser` validates string
+  contents and dies with `Unexpected attachment identifier`, so a constant or
+  truncated payload cannot reach a peak measurement. Ceiling probes on token contents
+  are only usable against the lexer alone.
+
 ## Foundation is not always the fast option
 
 The two fixes above replaced Foundation calls that the profile had ranked first

@@ -38,7 +38,7 @@ public final class Lexer {
             redactor.userDirToRedact = newValue
         }
     }
-    private var redactor: LogRedactor
+    var redactor: LogRedactor
 
     public init(filePath: String) {
         self.filePath = filePath
@@ -58,21 +58,42 @@ public final class Lexer {
     public func tokenize(contents: String,
                          redacted: Bool,
                          withoutBuildSpecificInformation: Bool) throws -> [Token] {
-        return try tokenize(scanner: Scanner(string: contents),
+        // Delegates rather than duplicating the loop, so the entry points cannot drift apart. Note
+        // that this converts the string to bytes, which copies; `tokenize(data:)` does not.
+        return try tokenize(bytes: Array(contents.utf8),
                             redacted: redacted,
                             withoutBuildSpecificInformation: withoutBuildSpecificInformation)
     }
 
-    /// Tokenizes an xcactivitylog held as `Data`.
+    /// Tokenizes an xcactivitylog serialized in the `SLF` format, reading the bytes directly.
     ///
-    /// The entry point for a real log, and the one the library and the benchmark both use. An
-    /// `.xcactivitylog` is `Data` on disk, so this is where the bytes already are.
+    /// Internal on purpose. This exists as the funnel `tokenize(contents:)` delegates to, so the two
+    /// entry points cannot drift apart - it is not an API worth offering, because on a real log it is
+    /// the wrong one: an `.xcactivitylog` is already `Data`, and copying it into an `[UInt8]` to call
+    /// this overload costs a full extra copy (+260 MB on a 265 MB log). Callers outside the package
+    /// want `tokenize(data:)`.
     ///
-    /// It copies today: `Scanner` requires a `String`, so this decodes the whole log into one before
-    /// scanning it. That copy is what later commits in this branch remove, by teaching `Scanner` to
-    /// borrow the bytes instead of owning a decoded copy. The entry point exists from here so that
-    /// every measurement of that work times the same call, rather than timing `tokenize(contents:)`
-    /// until the day the byte path appears and then silently switching over.
+    /// - parameter bytes: The UTF-8 bytes of the decompressed .xcactivitylog.
+    /// - parameter redacted: If true, the user's directory will be replaced by `<redacted>`.
+    /// - parameter withoutBuildSpecificInformation: If true, build specific information is removed.
+    /// - returns: An array of all the `Token` in the log.
+    /// - throws: An error if the document is not a valid SLF document
+    func tokenize(bytes: [UInt8],
+                  redacted: Bool,
+                  withoutBuildSpecificInformation: Bool) throws -> [Token] {
+        return try bytes.withUnsafeBytes {
+            try tokenize(buffer: $0,
+                         redacted: redacted,
+                         withoutBuildSpecificInformation: withoutBuildSpecificInformation)
+        }
+    }
+
+    /// Tokenizes an xcactivitylog held as `Data`, without copying it.
+    ///
+    /// The entry point the library itself uses. Gunzip produces `Data`, and turning that into an
+    /// `[UInt8]` cost a second full copy of the log - measured at +297 MB on a 265 MB log - only
+    /// because `Scanner` used to require an `Array`. It now borrows a raw buffer, so the `Data` can be
+    /// scanned where it already is.
     ///
     /// - parameter data: The decompressed .xcactivitylog.
     /// - parameter redacted: If true, the user's directory will be replaced by `<redacted>`.
@@ -82,15 +103,21 @@ public final class Lexer {
     public func tokenize(data: Data,
                          redacted: Bool,
                          withoutBuildSpecificInformation: Bool) throws -> [Token] {
-        return try tokenize(contents: String(decoding: data, as: UTF8.self),
-                            redacted: redacted,
-                            withoutBuildSpecificInformation: withoutBuildSpecificInformation)
+        return try data.withUnsafeBytes {
+            try tokenize(buffer: $0,
+                         redacted: redacted,
+                         withoutBuildSpecificInformation: withoutBuildSpecificInformation)
+        }
     }
 
     /// The single tokenizing loop. Every public entry point funnels into this, so they cannot drift.
-    private func tokenize(scanner: Scanner,
+    ///
+    /// - important: `buffer` is borrowed, not retained. Callers must keep the underlying storage alive
+    /// for the duration of this call, which the `withUnsafeBytes` wrappers above do by construction.
+    private func tokenize(buffer: UnsafeRawBufferPointer,
                           redacted: Bool,
                           withoutBuildSpecificInformation: Bool) throws -> [Token] {
+        let scanner = Scanner(bytes: buffer)
 
         guard scanSLFHeader(scanner: scanner) else {
             throw XCLogParserError.invalidLogHeader(filePath)
@@ -256,114 +283,6 @@ public final class Lexer {
                                            redacted: redacted,
                                            withoutBuildSpecificInformation: withoutBuildSpecificInformation)
         }
-    }
-
-    private func handleIntTokenTypeCase(scanner: Scanner, payload: Range<Int>) -> Token? {
-        guard let value = scanner.unsignedInteger(in: payload) else {
-            print("error parsing int")
-            return nil
-        }
-        return .int(value)
-    }
-
-    private func handleClassNameTokenTypeCase(scanner: Scanner,
-                                              payload: Range<Int>,
-                                              redacted: Bool,
-                                              withoutBuildSpecificInformation: Bool) -> Token? {
-        guard let className = scanString(length: payload,
-                                         scanner: scanner,
-                                         redacted: redacted,
-                                         withoutBuildSpecificInformation: withoutBuildSpecificInformation) else {
-                                            print("error parsing string")
-                                            return nil
-        }
-        classNames.append(className)
-        return .className(className)
-    }
-
-    private func handleClassNameRefTokenTypeCase(scanner: Scanner, payload: Range<Int>) -> Token? {
-        guard let parsed = scanner.unsignedInteger(in: payload), let value = Int(exactly: parsed) else {
-            print("error parsing classNameRef")
-            return nil
-        }
-        // Bounds-checked because the index comes from the log, not from us. `classNames` is populated by
-        // the `className` tokens seen so far, so a malformed document can reference an entry that does
-        // not exist - a payload of `0` gives -1, and any index past the declarations is out of range.
-        // Subscripting directly crashed the process with "Index out of range"; returning nil reports it
-        // as an invalid line, which is how every other malformed payload here behaves. Found by
-        // differential testing over generated SLF documents ("SLF01@356098f239dfc041^" is enough).
-        let element = value - 1
-        guard classNames.indices.contains(element) else {
-            print("error parsing classNameRef: no class name at index \(value)")
-            return nil
-        }
-        return .classNameRef(classNames[element])
-    }
-
-    private func handleStringTokenTypeCase(scanner: Scanner,
-                                           payload: Range<Int>,
-                                           redacted: Bool,
-                                           withoutBuildSpecificInformation: Bool) -> Token? {
-        guard let content = scanString(length: payload,
-                                       scanner: scanner,
-                                       redacted: redacted,
-                                       withoutBuildSpecificInformation: withoutBuildSpecificInformation) else {
-                                        print("error parsing string")
-                                        return nil
-        }
-        return .string(content)
-    }
-
-    private func handleJSONTokenTypeCase(scanner: Scanner,
-                                         payload: Range<Int>,
-                                         redacted: Bool,
-                                         withoutBuildSpecificInformation: Bool) -> Token? {
-        guard let content = scanString(length: payload,
-                                       scanner: scanner,
-                                       redacted: redacted,
-                                       withoutBuildSpecificInformation: withoutBuildSpecificInformation) else {
-                                        print("error parsing string")
-                                        return nil
-        }
-        return .json(content)
-    }
-
-    private func handleDoubleTokenTypeCase(scanner: Scanner, payload: Range<Int>) -> Token? {
-        guard let bigEndianBits = scanner.unsignedInteger(in: payload, radix: 16) else {
-            print("error parsing double")
-            return nil
-        }
-        return .double(Double(bitPattern: bigEndianBits.byteSwapped))
-    }
-
-    private func handleListTokenTypeCase(scanner: Scanner, payload: Range<Int>) -> Token? {
-        guard let parsed = scanner.unsignedInteger(in: payload), let value = Int(exactly: parsed) else {
-            print("error parsing list")
-            return nil
-        }
-        return .list(value)
-    }
-
-    private func scanString(length: Range<Int>,
-                            scanner: Scanner,
-                            redacted: Bool,
-                            withoutBuildSpecificInformation: Bool) -> String? {
-        guard let parsed = scanner.unsignedInteger(in: length), let value = Int(exactly: parsed),
-              let scannedResult = scanner.scan(count: value) else {
-            print("error parsing string")
-            return nil
-        }
-
-        var result = scannedResult
-        if redacted {
-            result = redactor.redactUserDir(string: result)
-        }
-        if withoutBuildSpecificInformation {
-            result = result
-                .removeProductBuildIdentifier()
-                .removeHexadecimalNumbers()
-        }
-        return result
     }
 
 }

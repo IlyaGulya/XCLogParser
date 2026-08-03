@@ -375,17 +375,21 @@ public class ActivityParser {
                            withoutBuildSpecificInformation: Bool) throws -> [Token] {
         let logLoader = LogLoader()
         var tokens: [Token] = []
+        // `loadBytesFromURL`/`tokenize(data:)` rather than the `String` pair: the log is `Data` on disk
+        // and the lexer scans that `Data` where it lies. Decoding to a `String` in between cost a full
+        // extra copy of the log, and copying into an `[UInt8]` cost another. See
+        // `LogLoader.loadBytesFromURL` for the one behaviour difference, on invalid UTF-8.
         #if os(Linux)
-        let content = try logLoader.loadFromURL(logURL)
+        let content = try logLoader.loadBytesFromURL(logURL)
         let lexer = Lexer(filePath: logURL.path)
-        tokens = try lexer.tokenize(contents: content,
+        tokens = try lexer.tokenize(data: content,
                                         redacted: redacted,
                                         withoutBuildSpecificInformation: withoutBuildSpecificInformation)
         #else
         try autoreleasepool {
-            let content = try logLoader.loadFromURL(logURL)
+            let content = try logLoader.loadBytesFromURL(logURL)
             let lexer = Lexer(filePath: logURL.path)
-            tokens = try lexer.tokenize(contents: content,
+            tokens = try lexer.tokenize(data: content,
                                             redacted: redacted,
                                             withoutBuildSpecificInformation: withoutBuildSpecificInformation)
         }
