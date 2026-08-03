@@ -24,6 +24,10 @@ public final class Lexer {
     static let SLFHeader = "SLF"
 
     let typeDelimiters: Set<Character>
+    /// Byte-set equivalents of the character sets used while scanning. Built once here because
+    /// `Scanner.scanCharacters(from:)` runs tens of millions of times per log.
+    private let typeDelimiterBytes: Set<UInt8>
+    private let payloadBytes: Set<UInt8>
     let filePath: String
     var classNames = [String]()
     var userDirToRedact: String? {
@@ -39,6 +43,8 @@ public final class Lexer {
     public init(filePath: String) {
         self.filePath = filePath
         self.typeDelimiters = Set(TokenType.all())
+        self.typeDelimiterBytes = Lexer.singleByteSet(from: self.typeDelimiters)
+        self.payloadBytes = Lexer.singleByteSet(from: Set("abcdef0123456789"))
         self.redactor = LexRedactor()
     }
 
@@ -127,14 +133,21 @@ public final class Lexer {
         }
     }
 
+    /// Keeps only the characters that encode to a single UTF-8 byte, matching the
+    /// behaviour of the previous per-call conversion inside `Scanner`.
+    private static func singleByteSet(from characters: Set<Character>) -> Set<UInt8> {
+        Set(characters.compactMap { character -> UInt8? in
+            let characterBytes = Array(String(character).utf8)
+            return characterBytes.count == 1 ? characterBytes[0] : nil
+        })
+    }
+
     private func scanPayload(scanner: Scanner) -> String {
-        let hexChars = "abcdef0123456789"
-        let characterSet = Set(hexChars)
-        return scanner.scanCharacters(from: characterSet) ?? ""
+        return scanner.scanCharacters(from: payloadBytes) ?? ""
     }
 
     private func scanTypeDelimiter(scanner: Scanner) -> [TokenType]? {
-        guard let delimiters = scanner.scanCharacters(from: self.typeDelimiters) else {
+        guard let delimiters = scanner.scanCharacters(from: self.typeDelimiterBytes) else {
             return nil
         }
 
