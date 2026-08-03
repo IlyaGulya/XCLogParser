@@ -91,42 +91,65 @@ public enum DetailStepType: String, Encodable {
     /// Validate app
     case validate
 
+    /// The `Prefix` patterns used by `getDetailType`, built once instead of on
+    /// every call. Constructing a `Prefix` lowercases its pattern, so building
+    /// them inline allocated a string per case per invocation.
+    private enum SignaturePrefix {
+        static let compileC = Prefix("CompileC ")
+        static let compileSwift = Prefix("CompileSwift ")
+        static let linker = Prefix("Ld ")
+        static let phaseScriptExecution = Prefix("PhaseScriptExecution ")
+        static let libtool = Prefix("Libtool ")
+        static let copySwiftLibs = Prefix("CopySwiftLibs ")
+        static let compileAssetCatalog = Prefix("CompileAssetCatalog")
+        static let compileStoryboard = Prefix("CompileStoryboard ")
+        static let writeAuxiliaryFile = Prefix("WriteAuxiliaryFile ")
+        static let linkStoryboards = Prefix("LinkStoryboards ")
+        static let cpResource = Prefix("CpResource ")
+        static let mergeSwiftModule = Prefix("MergeSwiftModule ")
+        static let compileXIB = Prefix("CompileXIB ")
+        static let compileSwiftSources = Prefix("CompileSwiftSources ")
+        static let precompileSwiftBridgingHeader = Prefix("PrecompileSwiftBridgingHeader ")
+        static let validateEmbeddedBinary = Prefix("ValidateEmbeddedBinary ")
+        static let validate = Prefix("Validate ")
+    }
+
     // swiftlint:disable:next cyclomatic_complexity
     public static func getDetailType(signature: String) -> DetailStepType {
         switch signature {
-        case Prefix("CompileC "):
+        case SignaturePrefix.compileC:
             return .cCompilation
-        case Prefix("CompileSwift "):
+        case SignaturePrefix.compileSwift:
             return .swiftCompilation
-        case Prefix("Ld "):
+        case SignaturePrefix.linker:
             return .linker
-        case Prefix("PhaseScriptExecution "):
+        case SignaturePrefix.phaseScriptExecution:
             return .scriptExecution
-        case Prefix("Libtool "):
+        case SignaturePrefix.libtool:
             return .createStaticLibrary
-        case Prefix("CopySwiftLibs "):
+        case SignaturePrefix.copySwiftLibs:
             return .copySwiftLibs
-        case Prefix("CompileAssetCatalog"):
+        case SignaturePrefix.compileAssetCatalog:
             return .compileAssetsCatalog
-        case Prefix("CompileStoryboard "):
+        case SignaturePrefix.compileStoryboard:
             return .compileStoryboard
-        case Prefix("WriteAuxiliaryFile "):
+        case SignaturePrefix.writeAuxiliaryFile:
             return .writeAuxiliaryFile
-        case Prefix("LinkStoryboards "):
+        case SignaturePrefix.linkStoryboards:
             return .linkStoryboards
-        case Prefix("CpResource "):
+        case SignaturePrefix.cpResource:
             return .copyResourceFile
-        case Prefix("MergeSwiftModule "):
+        case SignaturePrefix.mergeSwiftModule:
             return .mergeSwiftModule
-        case Prefix("CompileXIB "):
+        case SignaturePrefix.compileXIB:
             return .XIBCompilation
-        case Prefix("CompileSwiftSources "):
+        case SignaturePrefix.compileSwiftSources:
             return .swiftAggregatedCompilation
-        case Prefix("PrecompileSwiftBridgingHeader "):
+        case SignaturePrefix.precompileSwiftBridgingHeader:
             return .precompileBridgingHeader
-        case Prefix("ValidateEmbeddedBinary "):
+        case SignaturePrefix.validateEmbeddedBinary:
             return .validateEmbeddedBinary
-        case Prefix("Validate "):
+        case SignaturePrefix.validate:
             return .validate
         default:
             return .other

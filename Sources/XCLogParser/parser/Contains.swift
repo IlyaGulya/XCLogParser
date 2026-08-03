@@ -23,11 +23,21 @@ public struct Contains {
 
     let str: String
 
+    /// The lowercased pattern's UTF-8 bytes, when the pattern is pure ASCII.
+    /// `nil` for non-ASCII patterns, which always take the Unicode slow path.
+    private let asciiStr: [UInt8]?
+
     public init(_ str: String) {
         self.str = str.lowercased()
+        self.asciiStr = CaseFolding.asciiBytes(of: self.str)
     }
 
+    /// See `CaseFolding` for why the ASCII fast path is behaviour-preserving.
     private func match(_ input: String) -> Bool {
+        if let asciiStr = asciiStr,
+           let fast = CaseFolding.asciiContains(asciiStr, input: input) {
+            return fast
+        }
         return input.lowercased().contains(str)
     }
 }
