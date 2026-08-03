@@ -80,6 +80,11 @@ extension Notice {
                         }
                         notice = notice.with(detail: swiftErrorDetails[errorLocation])
                     }
+                } else {
+                    // Every other type was handed the whole `logSection.text` as its detail, above.
+                    // That is the classification input, not this notice's diagnostic, and it is the
+                    // single largest cost in the whole tool - see `narrowedToOwnDiagnostic`.
+                    notice = notice.narrowedToOwnDiagnostic(details: swiftErrorDetails)
                 }
 
                 // Handle special cases
@@ -101,6 +106,44 @@ extension Notice {
             }
             return nil
         }.flatMap { $0 }
+    }
+
+    /// Replaces a detail that is the whole section text with just this notice's own diagnostic.
+    ///
+    /// # Why
+    ///
+    /// `parseFromLogSection` hands `logSection.text` to every `Notice` it builds. The text is needed to
+    /// *classify* the notice - an Interface Builder warning can only be recognised from it - but it then
+    /// stays on as the *payload*, so a section is repeated once per notice in it. On a real 14 MB log the
+    /// worst single step is an `Emit Swift module` with 970 deprecation warnings sharing one 606 KB text:
+    /// 525 MB of output for 606 KB of information. Across the log it is 1857 MB of 1858 MB of all
+    /// `detail`, and 89.5% of the entire JSON report.
+    ///
+    /// In memory this is nearly free, which is why it survived several rounds of memory work: 78% of
+    /// details are COW references to a shared buffer, up to 909 notices deep, and forcing private copies
+    /// prices the whole thing at only +980 MB. The cost is paid by `JSONEncoder`, which serialises the
+    /// full text again for each notice - `JSONWriter.serializeString` was 54% of samples in a profile of
+    /// the real CLI.
+    ///
+    /// # How
+    ///
+    /// `parseSwiftIssuesDetailsByLocation` already splits the text into per-location diagnostics, and is
+    /// already computed for this section. Swift issues have used it all along; this just gives every
+    /// other type the same treatment, keyed on the finished notice's own `documentURL` and position.
+    ///
+    /// # When the whole text is kept
+    ///
+    /// Only when this notice has no diagnostic of its own to point at. Those are the notices with no
+    /// location - "Building targets in dependency order", "Target dependency graph (308 targets)" - whose
+    /// section text is not a per-file diagnostic in the first place, so narrowing it would lose the only
+    /// information there is. On the two benchmark logs the lookup hits 99.2% and 83.1% of the affected
+    /// notices, taking 1856.7 MB down to 11.4 MB and 939.4 MB down to 5.9 MB.
+    private func narrowedToOwnDiagnostic(details: [String: String]) -> Notice {
+        let location = documentURL.replacingOccurrences(of: "file://", with: "")
+        guard let own = details["\(location):\(startingLineNumber):\(startingColumnNumber):"] else {
+            return self
+        }
+        return with(detail: own)
     }
 
     /// Xcode reports the details of Swift errors and warnings as a mixed text with all the errors in a
