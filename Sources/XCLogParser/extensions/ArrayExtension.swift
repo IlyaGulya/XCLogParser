@@ -30,34 +30,37 @@ extension Array where Element: Hashable {
 
 }
 
+/// The three notice buckets a log section's notices are split into.
+///
+/// This used to be a `[String: [Notice]]` built with a dictionary literal, which allocated once
+/// per section and made the caller hash the same three keys back to read the values out. A struct
+/// carries the same three arrays with no allocation and no hashing.
+struct PartitionedNotices {
+    var warnings: [Notice] = []
+    var errors: [Notice] = []
+    var notes: [Notice] = []
+}
+
 extension Array where Element: Notice {
 
-    func getWarnings() -> [Notice] {
-        return filter {
-            $0.type == .swiftWarning ||
-            $0.type == .clangWarning ||
-            $0.type == .projectWarning ||
-            $0.type == .analyzerWarning ||
-            $0.type == .interfaceBuilderWarning ||
-            $0.type == .deprecatedWarning
+    /// Splits the notices into warnings, errors and notes in a single pass.
+    ///
+    /// Replaces three `filter` passes that each re-tested 6-7 enum cases per element. A notice's
+    /// type puts it in at most one bucket, so one `switch` per element decides it.
+    func partitionedByNoticeType() -> PartitionedNotices {
+        var result = PartitionedNotices()
+        for notice in self {
+            switch notice.type {
+            case .swiftWarning, .clangWarning, .projectWarning,
+                 .analyzerWarning, .interfaceBuilderWarning, .deprecatedWarning:
+                result.warnings.append(notice)
+            case .swiftError, .error, .clangError, .linkerError,
+                 .packageLoadingError, .scriptPhaseError, .failedCommandError:
+                result.errors.append(notice)
+            case .note:
+                result.notes.append(notice)
+            }
         }
-    }
-
-    func getErrors() -> [Notice] {
-        return filter {
-            $0.type == .swiftError ||
-            $0.type == .error ||
-            $0.type == .clangError ||
-            $0.type == .linkerError ||
-            $0.type == .packageLoadingError ||
-            $0.type == .scriptPhaseError ||
-            $0.type == .failedCommandError
-        }
-    }
-
-    func getNotes() -> [Notice] {
-        return filter {
-            $0.type == .note
-        }
+        return result
     }
 }

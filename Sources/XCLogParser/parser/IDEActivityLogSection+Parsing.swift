@@ -140,11 +140,16 @@ extension IDEActivityLogSection {
             .map { match -> BuildStep in
                 let file = desc.substring(match.range(at: 1))
                 currentIndex += 1
-                return buildStep
-                    .with(identifier: "\(buildStep.buildIdentifier)_\(currentIndex)")
-                    .with(documentURL: "file://\(file)")
-                    .with(title: "Compile \(file)")
-                    .with(signature: "\(buildStep.signature) \(file)")
+                // Four chained `with()` calls here meant four full copies of a 360-byte,
+                // 32-field struct per swift file, each retaining every reference in it, to change
+                // four `String`s. Setting the four fields on one copy does the same job. The
+                // public `with()` builders are unchanged and still available to API clients.
+                var step = buildStep
+                step.identifier = "\(buildStep.buildIdentifier)_\(currentIndex)"
+                step.documentURL = "file://\(file)"
+                step.title = "Compile \(file)"
+                step.signature = "\(buildStep.signature) \(file)"
+                return step
             }
 
         return assignNoticesFrom(buildStep, to: swiftSteps)

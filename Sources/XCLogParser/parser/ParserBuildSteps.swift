@@ -132,20 +132,16 @@ public final class ParserBuildSteps {
                 targetWarnings = 0
             }
             let notices = parseWarningsAndErrorsFromLogSection(logSection, forType: detailType)
-            let warnings: [Notice]? = notices?["warnings"]
-            let errors: [Notice]? = notices?["errors"]
-            let notes: [Notice]? = notices?["notes"]
-            var errorCount: Int = 0, warningCount: Int = 0
-            if let errors = errors {
-                errorCount = errors.count
-                totalErrors += errors.count
-                targetErrors += errors.count
-            }
-            if let warnings = warnings {
-                warningCount = warnings.count
-                totalWarnings += warnings.count
-                targetWarnings += warnings.count
-            }
+            // These stay non-optional `[Notice]` wrapped at the call site below, because the old
+            // dictionary literal always produced all three keys: a lookup never returned nil, so
+            // an empty bucket reached `BuildStep` as `[]`, not `nil`. `writeNotices` omits the key
+            // for nil and writes `[]` for empty, so collapsing empty to nil would change the JSON.
+            let warnings = notices.warnings, errors = notices.errors, notes = notices.notes
+            let errorCount = errors.count, warningCount = warnings.count
+            totalErrors += errorCount
+            targetErrors += errorCount
+            totalWarnings += warningCount
+            targetWarnings += warningCount
             var step = BuildStep(type: type,
                                  machineName: machineName,
                                  buildIdentifier: self.buildIdentifier,
@@ -310,11 +306,9 @@ public final class ParserBuildSteps {
     }
 
     private func parseWarningsAndErrorsFromLogSection(_ logSection: IDEActivityLogSection, forType type: DetailStepType)
-        -> [String: [Notice]]? {
+        -> PartitionedNotices {
         let notices = Notice.parseFromLogSection(logSection, forType: type, truncLargeIssues: truncLargeIssues)
-        return ["warnings": notices.getWarnings(),
-                "errors": notices.getErrors(),
-                "notes": notices.getNotes()]
+        return notices.partitionedByNoticeType()
     }
 
     private func decorateWithSwiftcTimes(_ mainStep: BuildStep) -> BuildStep {
@@ -368,8 +362,7 @@ public final class ParserBuildSteps {
     func addCompilationTimes(step: BuildStep) -> BuildStep {
         switch step.type {
         case .detail:
-            return step.with(newCompilationEndTimestamp: step.endTimestamp,
-                             andCompilationDuration: step.duration)
+            return step.settingCompilationTimes(endTimestamp: step.endTimestamp, duration: step.duration)
         case .target:
             return addCompilationTimesToTarget(step)
         case .main:
@@ -384,10 +377,11 @@ public final class ParserBuildSteps {
                 $0.compilationEndTimestamp >= target.startTimestamp }
             .max { $0.compilationEndTimestamp < $1.compilationEndTimestamp }
         guard let lastStep = lastCompilationStep else {
-            return target.with(newCompilationEndTimestamp: target.startTimestamp, andCompilationDuration: 0.0)
+            return target.settingCompilationTimes(endTimestamp: target.startTimestamp, duration: 0.0)
         }
-        return target.with(newCompilationEndTimestamp: lastStep.compilationEndTimestamp,
-                         andCompilationDuration: lastStep.compilationEndTimestamp - target.startTimestamp)
+        return target.settingCompilationTimes(
+            endTimestamp: lastStep.compilationEndTimestamp,
+            duration: lastStep.compilationEndTimestamp - target.startTimestamp)
     }
 
     private func addCompilationTimesToApp(_ app: BuildStep) -> BuildStep {
@@ -396,11 +390,11 @@ public final class ParserBuildSteps {
                 $0.compilationEndTimestamp >= app.startTimestamp }
             .max { $0.compilationEndTimestamp < $1.compilationEndTimestamp }
         guard let lastStep = lastCompilationStep else {
-            return app.with(newCompilationEndTimestamp: app.startTimestamp,
-                            andCompilationDuration: 0.0)
+            return app.settingCompilationTimes(endTimestamp: app.startTimestamp, duration: 0.0)
         }
-        return app.with(newCompilationEndTimestamp: lastStep.compilationEndTimestamp,
-                         andCompilationDuration: lastStep.compilationEndTimestamp - app.startTimestamp)
+        return app.settingCompilationTimes(
+            endTimestamp: lastStep.compilationEndTimestamp,
+            duration: lastStep.compilationEndTimestamp - app.startTimestamp)
     }
 
 }

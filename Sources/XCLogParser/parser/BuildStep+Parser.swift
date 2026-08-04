@@ -43,7 +43,33 @@ public extension BuildStep {
                 updatedSubSteps.append(contentsOf: subStep.subSteps)
             }
         }
-        return with(subSteps: updatedSubSteps)
+        // Assigning the one field that changes, rather than `with(subSteps:)`, which rebuilds all
+        // 32 fields of a 360-byte struct and retains every reference in it. A DTrace `swift_retain`
+        // count keyed by caller put this function at 1,744,696 retains, 16.7% of all 10.4M on
+        // flagged-10x-fleet - it is called once per detail step. The loop above is untouched,
+        // including its index-shifting behaviour, so the result is unchanged.
+        var updated = self
+        updated.subSteps = updatedSubSteps
+        return updated
+    }
+
+}
+
+extension BuildStep {
+
+    /// Returns a copy with the two compilation-time fields set.
+    ///
+    /// `with(newCompilationEndTimestamp:andCompilationDuration:)` rebuilds all 32 fields of a
+    /// 360-byte struct to write two `Double`s, retaining every reference on the way. Both fields
+    /// are already `var`, so one copy and two stores do the same job. A DTrace `swift_retain`
+    /// count keyed by caller put `addCompilationTimes` at 249,485 retains on flagged-10x-fleet.
+    ///
+    /// Internal on purpose: the public `with(...)` builder stays the supported API for clients.
+    func settingCompilationTimes(endTimestamp: Double, duration: Double) -> BuildStep {
+        var updated = self
+        updated.compilationEndTimestamp = endTimestamp
+        updated.compilationDuration = duration
+        return updated
     }
 
 }
