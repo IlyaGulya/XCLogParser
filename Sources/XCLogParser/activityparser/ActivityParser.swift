@@ -775,7 +775,7 @@ public class ActivityParser {
         }
         switch token {
         case .string(let string):
-            return string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return string.trimmedIfNeeded()
         case .null:
             return ""
         default:
