@@ -150,6 +150,7 @@ extension ParserTests {
         ("testParseSwiftIssuesDetails", testParseSwiftIssuesDetails),
         ("testParseTargetCompilationTimes", testParseTargetCompilationTimes),
         ("testParseTargetName", testParseTargetName),
+        ("testSectionWithoutMessagesProducesNoNotices", testSectionWithoutMessagesProducesNoNotices),
         ("testParseWarningsAndErrors", testParseWarningsAndErrors),
     ]
 }

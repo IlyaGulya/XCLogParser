@@ -33,6 +33,16 @@ extension Notice {
                                            forType type: DetailStepType,
                                            truncLargeIssues: Bool)
         -> [Notice] {
+        // Every notice this function can return comes from a message: `parseClangWarnings` zips
+        // against `messages`, and every other branch iterates the messages left after that filter.
+        // With none, the result is `[]` no matter what the text holds - but both scans below walk
+        // the whole text to find that out. That is 95.8% of all section-text bytes on the
+        // flagged-10x-fleet log (168.9 of 176.2 MB, in 37395 of 42148 sections) and 16.5% on
+        // baseline-noflags, against three scanners worth 22.8% of samples. It is also why the
+        // BuildStep stage cost more on the smaller log: 393 ms for flagged's 42148 sections
+        // against 232 ms for baseline's 69821.
+        guard !logSection.messages.isEmpty else { return [] }
+
         var logSection = logSection
         if truncLargeIssues && logSection.messages.count > 100 {
             logSection = self.logSectionWithTruncatedIssues(logSection: logSection)
@@ -45,67 +55,88 @@ extension Notice {
         let remainingLogMessages = logSection.messages.filter { message in
             return clangWarnings.contains { $0.title == message.title } == false
         }
+        // Nothing below reads the details except the closure over `remainingLogMessages`, so a
+        // section whose messages were all clang warnings need not be scanned a second time.
+        guard !remainingLogMessages.isEmpty else { return clangWarnings }
+
         // parse details for Swift issues
         let swiftErrorDetails = parseSwiftIssuesDetailsByLocation(logSection.text)
+        // Same text for every message, so the same answer: classify it once. See the type's doc.
+        let textNoticeType = SectionTextNoticeType(text: logSection.text)
         // we look for analyzer warnings, swift warnings, notes and errors
-        return clangWarnings + remainingLogMessages.compactMap { message -> [Notice]? in
-            if let resultMessage = message as? IDEActivityLogAnalyzerResultMessage {
-                return resultMessage.subMessages.compactMap {
-                    if let stepMessage = $0 as? IDEActivityLogAnalyzerEventStepMessage {
-                        return Notice(withType: .analyzerWarning, logMessage: stepMessage)
-                    }
-                    return nil
-                }
-            }
-            // Special case, Interface builder warning can only be spotted by checking the whole text of the
-            // log section
-            let noticeTypeTitle = message.categoryIdent.isEmpty ? logSection.text : message.categoryIdent
-            if var notice = Notice(withType: NoticeType.fromTitle(noticeTypeTitle),
-                                   logMessage: message,
-                                   detail: logSection.text) {
-                // Add the right details to Swift errors
-                if notice.type == NoticeType.swiftError || notice.type == .swiftWarning {
-                    // Special case, if Swiftc fails for a whole module,
-                    // we don't have location and the detail already has
-                    // enough information
-                    let noticeDetail = notice.detail ?? ""
-                    if noticeDetail.starts(with: "error:") == false {
-                        var errorLocation = notice.documentURL.replacingOccurrences(of: "file://", with: "")
-                        errorLocation += ":\(notice.startingLineNumber):\(notice.startingColumnNumber):"
-                        // do not report error in a file that it does not belong to (we'll ended
-                        // up having duplicated errors)
-                        if !logSection.location.documentURLString.isEmpty
-                            && logSection.location.documentURLString != notice.documentURL {
-                            return nil
-                        }
-                        notice = notice.with(detail: swiftErrorDetails[errorLocation])
-                    }
-                } else {
-                    // Every other type was handed the whole `logSection.text` as its detail, above.
-                    // That is the classification input, not this notice's diagnostic, and it is the
-                    // single largest cost in the whole tool - see `narrowedToOwnDiagnostic`.
-                    notice = notice.narrowedToOwnDiagnostic(details: swiftErrorDetails)
-                }
-
-                // Handle special cases
-
-                if isDeprecatedWarning(type: notice.type, text: notice.title, clangFlags: notice.clangFlag) {
-                    return [notice.with(type: .deprecatedWarning)]
-                }
-                // Ld command errors
-                if notice.type == .error && type == .linker {
-                    return [notice.with(type: .linkerError)]
-                }
-                // Build phase's script errors
-                if notice.type == .scriptPhaseError {
-                    // Decorate script phase error with the signature that contains the name of the
-                    // phase and the target
-                    return [notice.with(detail: "\(notice.detail ?? "") \(logSection.signature)")]
-                }
-                return [notice]
-            }
-            return nil
+        return clangWarnings + remainingLogMessages.compactMap {
+            notices(from: $0, in: logSection, forType: type,
+                    swiftErrorDetails: swiftErrorDetails, textNoticeType: textNoticeType)
         }.flatMap { $0 }
+    }
+
+    /// The notices a single non-clang message contributes, or `nil` for one that contributes none.
+    ///
+    /// Split out of `parseFromLogSection` only to keep that function within the complexity and
+    /// length limits once the two early exits were added; the body is unchanged.
+    private static func notices(from message: IDEActivityLogMessage,
+                                in logSection: IDEActivityLogSection,
+                                forType type: DetailStepType,
+                                swiftErrorDetails: [String: String],
+                                textNoticeType: SectionTextNoticeType) -> [Notice]? {
+        if let resultMessage = message as? IDEActivityLogAnalyzerResultMessage {
+            return resultMessage.subMessages.compactMap {
+                if let stepMessage = $0 as? IDEActivityLogAnalyzerEventStepMessage {
+                    return Notice(withType: .analyzerWarning, logMessage: stepMessage)
+                }
+                return nil
+            }
+        }
+        // Special case, Interface builder warning can only be spotted by checking the whole text of the
+        // log section
+        let resolvedType = message.categoryIdent.isEmpty
+            ? textNoticeType.noticeType
+            : NoticeType.fromTitle(message.categoryIdent)
+        if var notice = Notice(withType: resolvedType,
+                               logMessage: message,
+                               detail: logSection.text) {
+            // Add the right details to Swift errors
+            if notice.type == NoticeType.swiftError || notice.type == .swiftWarning {
+                // Special case, if Swiftc fails for a whole module,
+                // we don't have location and the detail already has
+                // enough information
+                let noticeDetail = notice.detail ?? ""
+                if noticeDetail.starts(with: "error:") == false {
+                    var errorLocation = notice.documentURL.replacingOccurrences(of: "file://", with: "")
+                    errorLocation += ":\(notice.startingLineNumber):\(notice.startingColumnNumber):"
+                    // do not report error in a file that it does not belong to (we'll ended
+                    // up having duplicated errors)
+                    if !logSection.location.documentURLString.isEmpty
+                        && logSection.location.documentURLString != notice.documentURL {
+                        return nil
+                    }
+                    notice = notice.with(detail: swiftErrorDetails[errorLocation])
+                }
+            } else {
+                // Every other type was handed the whole `logSection.text` as its detail, above.
+                // That is the classification input, not this notice's diagnostic, and it is the
+                // single largest cost in the whole tool - see `narrowedToOwnDiagnostic`.
+                notice = notice.narrowedToOwnDiagnostic(details: swiftErrorDetails)
+            }
+
+            // Handle special cases
+
+            if isDeprecatedWarning(type: notice.type, text: notice.title, clangFlags: notice.clangFlag) {
+                return [notice.with(type: .deprecatedWarning)]
+            }
+            // Ld command errors
+            if notice.type == .error && type == .linker {
+                return [notice.with(type: .linkerError)]
+            }
+            // Build phase's script errors
+            if notice.type == .scriptPhaseError {
+                // Decorate script phase error with the signature that contains the name of the
+                // phase and the target
+                return [notice.with(detail: "\(notice.detail ?? "") \(logSection.signature)")]
+            }
+            return [notice]
+        }
+        return nil
     }
 
     /// Replaces a detail that is the whole section text with just this notice's own diagnostic.
@@ -138,8 +169,10 @@ extension Notice {
     /// section text is not a per-file diagnostic in the first place, so narrowing it would lose the only
     /// information there is. On the two benchmark logs the lookup hits 99.2% and 83.1% of the affected
     /// notices, taking 1856.7 MB down to 11.4 MB and 939.4 MB down to 5.9 MB.
+    ///
+    /// Runs once per non-Swift notice, so the scheme strip avoids Foundation: see `withoutFileScheme`.
     private func narrowedToOwnDiagnostic(details: [String: String]) -> Notice {
-        let location = documentURL.replacingOccurrences(of: "file://", with: "")
+        let location = documentURL.withoutFileScheme
         guard let own = details["\(location):\(startingLineNumber):\(startingColumnNumber):"] else {
             return self
         }
