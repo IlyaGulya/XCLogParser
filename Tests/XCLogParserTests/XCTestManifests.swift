@@ -44,6 +44,15 @@ extension JSONWriterTests {
     ]
 }
 
+extension JSONWriterStreamingTests {
+    static let __allTests__JSONWriterStreamingTests = [
+        ("testSinkErrorIsRecordedAndStopsFurtherFlushes", testSinkErrorIsRecordedAndStopsFurtherFlushes),
+        ("testSmallThresholdProducesManyChunks", testSmallThresholdProducesManyChunks),
+        ("testStreamedChunksConcatenateToTheBufferedReport", testStreamedChunksConcatenateToTheBufferedReport),
+        ("testWriterWithoutSinkNeverFlushes", testWriterWithoutSinkNeverFlushes)
+    ]
+}
+
 extension StringTrimExtensionTests {
     static let __allTests__StringTrimExtensionTests = [
         ("testDoesNotTrimNonWhitespaceNonAscii", testDoesNotTrimNonWhitespaceNonAscii),
@@ -298,6 +307,7 @@ public func __allTests() -> [XCTestCaseEntry] {
         testCase(ISO8601DateStringTests.__allTests__ISO8601DateStringTests),
         testCase(ChromeTracerOutputTests.__allTests__ChromeTracerOutputTests),
         testCase(JSONWriterTests.__allTests__JSONWriterTests),
+        testCase(JSONWriterStreamingTests.__allTests__JSONWriterStreamingTests),
         testCase(JSONWriterParityTests.__allTests__JSONWriterParityTests),
         testCase(StringTrimExtensionTests.__allTests__StringTrimExtensionTests),
         testCase(IssuesReporterTests.__allTests__IssuesReporterTests),

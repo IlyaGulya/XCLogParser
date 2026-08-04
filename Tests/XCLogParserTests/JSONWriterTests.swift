@@ -285,15 +285,17 @@ class JSONWriterTests: XCTestCase {
                     linkerStatistics: linker)
     }
 
-    private static func step(identifier: String = "id",
-                             subSteps: [BuildStep] = [],
-                             warnings: [Notice]? = nil,
-                             errors: [Notice]? = nil,
-                             notes: [Notice]? = nil,
-                             swiftFunctionTimes: [SwiftFunctionTime]? = nil,
-                             swiftTypeCheckTimes: [SwiftTypeCheck]? = nil,
-                             clangTimeTraceFile: String? = nil,
-                             linkerStatistics: LinkerStatistics? = nil) -> BuildStep {
+    /// Not `private`: `JSONWriterStreamingTests` builds its trees from the same fixture, so the two
+    /// classes cannot disagree about what a step looks like.
+    static func step(identifier: String = "id",
+                     subSteps: [BuildStep] = [],
+                     warnings: [Notice]? = nil,
+                     errors: [Notice]? = nil,
+                     notes: [Notice]? = nil,
+                     swiftFunctionTimes: [SwiftFunctionTime]? = nil,
+                     swiftTypeCheckTimes: [SwiftTypeCheck]? = nil,
+                     clangTimeTraceFile: String? = nil,
+                     linkerStatistics: LinkerStatistics? = nil) -> BuildStep {
         return BuildStep(type: .detail,
                          machineName: "machine",
                          buildIdentifier: "build-id",

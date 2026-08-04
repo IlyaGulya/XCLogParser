@@ -286,9 +286,10 @@ struct LogBenchmark {
             let streamed = try measureWithCounts {
                 try JsonReporter().report(build: buildStep, output: streamOutput, rootOutput: "")
             }
-            // Only recorded when the report was actually streamed. No reporter streams yet, so this is
-            // skipped today; filing the buffered fallback under "Encode JSON (streaming)" would put a
-            // number against a path that did not run.
+            // Only recorded when the report was actually streamed. `JsonReporter` streams as of this
+            // commit, so this is the live path now; it is still guarded because the same harness gets
+            // built against older libraries when sweeping a range, and filing the buffered fallback
+            // under "Encode JSON (streaming)" would put a number against a path that did not run.
             if !streamOutput.fellBackToBuffering {
                 result.timings[.encodeStreaming] = streamed.seconds
                 result.counts[.encodeStreaming] = streamed.counts

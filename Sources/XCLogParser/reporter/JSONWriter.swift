@@ -62,9 +62,18 @@ struct JSONWriter {
     /// Nesting state is a stack because closing a container has to restore the parent's comma flag.
     private var parentHadValue: [Bool] = []
 
+    /// Streaming state, used from `JSONWriter+Streaming.swift`; the two `bytes` accessors below live
+    /// here so the buffer itself stays `private(set)`.
+    var sink: ((Data) throws -> Void)?
+    var flushThreshold: Int = .max
+    var sinkError: Error?
+
     init(reservingCapacity capacity: Int = 0) {
         if capacity > 0 { bytes.reserveCapacity(capacity) }
     }
+
+    mutating func reserve(_ capacity: Int) { bytes.reserveCapacity(capacity) }
+    mutating func discardBufferKeepingCapacity() { bytes.removeAll(keepingCapacity: true) }
 
     /// Hands the written bytes over as `Data` without copying them.
     ///
@@ -105,6 +114,9 @@ struct JSONWriter {
 
     mutating func endObject() {
         popLevel(closing: UInt8(ascii: "}"))
+        // A closed object is a complete unit of the report, so this is where the buffer is drained
+        // when streaming. See `flushIfNeeded()`; it is a no-op with no sink.
+        flushIfNeeded()
     }
 
     mutating func beginArray() {

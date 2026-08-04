@@ -54,10 +54,16 @@ final class CountingStreamOutput: StreamingReporterOutput {
 
     /// Set when the reporter buffered the whole report instead of streaming it.
     ///
-    /// No reporter streams yet - `JsonReporter` gains that later in this branch - so this is the path
-    /// taken today, and it must not be an error: a sweep measuring every commit would then die on
-    /// every point before streaming lands. It must not be recorded as a streaming measurement either,
-    /// since what ran was the buffered path. The caller checks this and leaves the stage unmeasured.
+    /// `JsonReporter` streams as of this commit, so the fallback is no longer the path taken here.
+    /// It stays, and it stays a flag rather than an error, because a sweep measuring a range of
+    /// commits builds this harness against each of their libraries: against one whose `JsonReporter`
+    /// predates streaming, `output as? StreamingReporterOutput` fails and the whole report arrives in
+    /// one `write(report:)`. Making that fatal would kill the sweep on every such point.
+    ///
+    /// It must not be recorded as a streaming measurement either, since what ran was the buffered
+    /// path. The caller checks this and leaves the stage unmeasured, which is what makes a table of
+    /// streaming footprints trustworthy: a row is either a real streamed figure or absent, never the
+    /// buffered number wearing a streaming label.
     private(set) var fellBackToBuffering = false
 
     func write(report: Any) throws {

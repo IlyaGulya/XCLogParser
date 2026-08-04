@@ -37,10 +37,38 @@ public final class StandardOutput: ReporterOutput {
 
     }
 
+    /// Writes the report's bytes straight to stdout.
+    ///
+    /// This used to go through `String(data: data, encoding: .utf8)` and `print`, which for a report
+    /// meant validating 94-171 MB as UTF-8 and copying all of it into a second String of the same
+    /// size. That was 25% of the time inside this function - about 4% of the whole run - plus a
+    /// transient buffer as large as the report itself.
+    ///
+    /// Writing the `Data` produces the same bytes: `print(string)` emits the UTF-8 encoding of a
+    /// String that was built by validating these exact bytes, followed by a newline. The one
+    /// behavioural difference is invalid UTF-8, where the old code printed *nothing at all* because
+    /// the optional initializer returned nil - so bytes now reach stdout in a case that previously
+    /// produced silence.
     private func write(data: Data) {
-        if let string = String(data: data, encoding: .utf8) {
-            print(string)
-        }
+        FileHandle.standardOutput.write(data)
+        FileHandle.standardOutput.write(Data("\n".utf8))
+    }
+
+}
+
+extension StandardOutput: StreamingReporterOutput {
+
+    /// Nothing to open: stdout is already there, and `write(data:)` above writes to it directly. The
+    /// streamed path therefore emits byte for byte what the single-call path emits - the chunks
+    /// concatenated, then the same trailing newline.
+    public func beginStreaming() throws {}
+
+    public func write(chunk: Data) throws {
+        FileHandle.standardOutput.write(chunk)
+    }
+
+    public func endStreaming() throws {
+        FileHandle.standardOutput.write(Data("\n".utf8))
     }
 
 }
