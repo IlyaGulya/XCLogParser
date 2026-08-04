@@ -34,19 +34,14 @@ public protocol ReporterOutput {
 /// building the whole report as before. A defaulted requirement cannot be asked that question - it
 /// always answers "yes" and silently buffers, which just moves the memory it was meant to save.
 ///
-/// Adding a protocol breaks nothing. Existing `ReporterOutput` conformers, in this package or outside
-/// it, are unaffected.
-///
-/// No reporter drains it yet - `JsonReporter` still builds the whole report and hands it over in one
-/// `write(report:)`. The protocol lands here so the benchmark can time both ways of getting a report
-/// out from the branch's first commit, and so the commit that teaches the reporter to stream is a
-/// change to the reporter alone, measured at a call site that did not move under it.
+/// Adding a protocol breaks nothing. Existing `ReporterOutput` conformers, in this package or
+/// outside it, are unaffected; they simply do not match the `as?` in `JsonReporter`.
 public protocol StreamingReporterOutput: ReporterOutput {
 
     /// Prepares the output to receive a report in pieces.
     ///
-    /// Any pre-flight check belongs here, not on the first chunk: `FileOutput` refuses to overwrite an
-    /// existing file, and that has to fail before a single byte is emitted.
+    /// Any pre-flight check belongs here, not on the first chunk: `FileOutput` refuses to overwrite
+    /// an existing file, and that has to fail before a single byte is emitted.
     func beginStreaming() throws
 
     /// Appends the next piece of the report. Only valid between `beginStreaming()` and

@@ -26,6 +26,14 @@ public struct JsonReporter: LogReporter {
     public func report(build: Any, output: ReporterOutput, rootOutput: String) throws {
         switch build {
         case let steps as BuildStep:
+            if let streaming = output as? StreamingReporterOutput {
+                try write(steps: steps, to: streaming)
+                return
+            }
+            // Fallback for an output that cannot take chunks - a `ReporterOutput` from before
+            // `StreamingReporterOutput` existed, or one written by a library consumer. Builds the
+            // whole report in one buffer, exactly as this did before streaming was added.
+            //
             // The build-step tree is the large report - 96-166 MB, tens of thousands of steps - and
             // the only one where encoding dominates the runtime, so it is written directly rather
             // than through `JSONEncoder`. See `JSONWriter`. The two cases below are small and keep
@@ -45,6 +53,31 @@ public struct JsonReporter: LogReporter {
         default:
             throw XCLogParserError.errorCreatingReport("Type not supported \(type(of: build))")
         }
+    }
+
+    /// Writes the build-step tree straight to the output in chunks, never holding the whole report.
+    ///
+    /// The report is 94-171 MB on the benchmark logs and nothing reads it twice, so materialising it
+    /// only to hand it over in one call cost its full size in peak RSS. Streaming replaces that with
+    /// one chunk-sized buffer.
+    ///
+    /// 1 MB per chunk: large enough that the per-`write` syscall overhead is negligible against the
+    /// bytes moved, small enough to be a rounding error next to the ~1 GB peak. The exact figure is
+    /// not delicate - anything from a few hundred KB up behaves the same.
+    private func write(steps: BuildStep, to output: StreamingReporterOutput) throws {
+        let chunkSize = 1024 * 1024
+        try output.beginStreaming()
+        var writer = JSONWriter(flushThreshold: chunkSize) { chunk in
+            try output.write(chunk: chunk)
+        }
+        steps.write(to: &writer)
+        writer.flush()
+        // The walk itself cannot throw, so a sink failure is surfaced here. Rethrown before
+        // `endStreaming()` so a failed write does not get reported as a file successfully written.
+        if let error = writer.sinkError {
+            throw error
+        }
+        try output.endStreaming()
     }
 
     private func report<T: Encodable>(encodable: T, output: ReporterOutput) throws {
