@@ -65,6 +65,31 @@ class StringTrimExtensionTests: XCTestCase {
         }
     }
 
+    /// The byte-level trim slices UTF-8 directly, so a multi-byte scalar in the *interior* is what
+    /// would break if the cut were made at the wrong offset. Both ends are ASCII whitespace here,
+    /// which is exactly the case that now avoids Foundation.
+    func testTrimsAsciiEdgesAroundNonAsciiInterior() {
+        let interiors = ["héllo wörld", "日本語のテキスト", "a→b", "🙂 emoji 🙂", "\u{00A0}nbsp inside"]
+        for interior in interiors {
+            for candidate in [" \(interior) ", "\t\(interior)\n", "\r\n  \(interior)  \t"] {
+                XCTAssertEqual(candidate.trimmedIfNeeded(),
+                               candidate.trimmingCharacters(in: .whitespacesAndNewlines),
+                               "mismatch for interior \"\(interior)\"")
+            }
+        }
+    }
+
+    /// Multi-byte scalars adjacent to the trimmed run: the first kept byte is a UTF-8 lead byte and
+    /// the last kept byte is a continuation byte, so an off-by-one would produce replacement
+    /// characters rather than a wrong-length string, and equality with Foundation catches it.
+    func testTrimsRightUpToAMultiByteScalar() {
+        for candidate in ["  日本  ", "\t🙂\t", " é ", "\n\u{00A0}x\u{00A0}\n"] {
+            XCTAssertEqual(candidate.trimmedIfNeeded(),
+                           candidate.trimmingCharacters(in: .whitespacesAndNewlines),
+                           "mismatch for \"\(candidate.debugDescription)\"")
+        }
+    }
+
     /// A string that is nothing but whitespace trims to empty - the case where first and last are
     /// the same byte and both are trimmable.
     func testWhitespaceOnlyStringsBecomeEmpty() {
