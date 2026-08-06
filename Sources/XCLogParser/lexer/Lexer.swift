@@ -30,6 +30,14 @@ public final class Lexer {
     private let payloadBytes: ByteSet
     let filePath: String
     var classNames = [String]()
+
+    /// The log the current scan is reading, when it can be retained for deferred decoding.
+    ///
+    /// Set per call from `tokenize(buffer:retaining:...)`. Non-nil only for `tokenize(data:)`, which owns
+    /// the `Data` and can hand out ranges into it that stay valid; the `[UInt8]` and `String` entry points
+    /// leave it nil and get eagerly built strings, because a range into a buffer we do not own would
+    /// dangle. See `LazyString`.
+    var logBytes: LogBytes?
     var userDirToRedact: String? {
         get {
             redactor.userDirToRedact
@@ -103,8 +111,13 @@ public final class Lexer {
     public func tokenize(data: Data,
                          redacted: Bool,
                          withoutBuildSpecificInformation: Bool) throws -> [Token] {
+        // Retained for the lifetime of the tokens, so section text can be a range into it rather than a
+        // String nothing may ever read. Not retained under the rewriting flags: both change the scanned
+        // bytes, so a range into the original log would no longer describe the result. See `LazyString`.
+        let retained = (redacted || withoutBuildSpecificInformation) ? nil : LogBytes(data)
         return try data.withUnsafeBytes {
             try tokenize(buffer: $0,
+                         retaining: retained,
                          redacted: redacted,
                          withoutBuildSpecificInformation: withoutBuildSpecificInformation)
         }
@@ -115,8 +128,13 @@ public final class Lexer {
     /// - important: `buffer` is borrowed, not retained. Callers must keep the underlying storage alive
     /// for the duration of this call, which the `withUnsafeBytes` wrappers above do by construction.
     private func tokenize(buffer: UnsafeRawBufferPointer,
+                          retaining retained: LogBytes? = nil,
                           redacted: Bool,
                           withoutBuildSpecificInformation: Bool) throws -> [Token] {
+        // Per call, never sticky: the `[UInt8]` and `String` entry points pass nil and must not inherit
+        // a previous call's log, or this log's ranges would be read out of the previous log's bytes.
+        logBytes = retained
+
         let scanner = Scanner(bytes: buffer)
 
         guard scanSLFHeader(scanner: scanner) else {

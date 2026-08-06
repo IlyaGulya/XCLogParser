@@ -178,7 +178,15 @@ public class ActivityParser {
         if case .some(.int) = textToken {
             textToken = iterator.next()
         }
-        let text = try parseAsString(token: textToken)
+        // Not `parseAsString`: that decodes, and section text is 91% of all string-token bytes with
+        // most of it never read. `deferredRange` hands the range straight through to the section,
+        // which trims and decodes on first access. See `LazyString`.
+        let sectionText: IDEActivityLogSection.SectionText
+        if let (logBytes, range) = Self.deferredText(in: textToken) {
+            sectionText = .range(range, logBytes: logBytes)
+        } else {
+            sectionText = .decoded(try parseAsString(token: textToken))
+        }
         let messages = try parseMessages(iterator: &iterator)
         let wasCancelled = try parseBoolean(token: iterator.next())
         let isQuiet = try parseBoolean(token: iterator.next())
@@ -212,7 +220,7 @@ public class ActivityParser {
             timeStartedRecording: timeStartedRecording,
             timeStoppedRecording: timeStoppedRecording,
             subSections: subSections,
-            text: text,
+            sectionText: sectionText,
             messages: messages,
             wasCancelled: wasCancelled,
             isQuiet: isQuiet,
@@ -769,13 +777,22 @@ public class ActivityParser {
             throw XCLogParserError.parseError("Unexpected Token parsing IBAttributeSearchLocation: \(nextToken)")
     }
 
+    /// The log bytes and range behind `token`, when it is a string the lexer left undecoded.
+    ///
+    /// `nil` for anything else - a materialized string, `.null`, or a non-string token - and the caller
+    /// falls back to `parseAsString`, which also raises the parse error for a wrong token type.
+    private static func deferredText(in token: Token?) -> (LogBytes, Range<Int>)? {
+        guard case .some(.string(let string)) = token else { return nil }
+        return string.deferredRange
+    }
+
     private func parseAsString(token: Token?) throws -> String {
         guard let token = token else {
             throw XCLogParserError.parseError("Unexpected EOF parsing String")
         }
         switch token {
         case .string(let string):
-            return string.trimmedIfNeeded()
+            return string.value.trimmedIfNeeded()
         case .null:
             return ""
         default:

@@ -64,7 +64,8 @@ public enum Token: CustomDebugStringConvertible, Equatable {
     case int(UInt64)
     case className(String)
     case classNameRef(String)
-    case string(String)
+    /// A string that may not have been decoded yet - see `LazyString`. Read `.value` for the string.
+    case string(LazyString)
     case double(Double)
     case null
     case list(Int)
