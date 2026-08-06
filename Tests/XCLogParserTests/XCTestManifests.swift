@@ -296,6 +296,14 @@ extension JSONWriterParityTests {
     ]
 }
 
+extension LazyStringTests {
+    static let __allTests__LazyStringTests = [
+        ("testDeferredStringOutlivesTheCallSitesData", testDeferredStringOutlivesTheCallSitesData),
+        ("testReusedLexerDoesNotReadOneLogsRangesFromAnother",
+         testReusedLexerDoesNotReadOneLogsRangesFromAnother)
+    ]
+}
+
 public func __allTests() -> [XCTestCaseEntry] {
     return [
         testCase(ActivityParserTests.__allTests__ActivityParserTests),
@@ -312,6 +320,7 @@ public func __allTests() -> [XCTestCaseEntry] {
         testCase(StringTrimExtensionTests.__allTests__StringTrimExtensionTests),
         testCase(IssuesReporterTests.__allTests__IssuesReporterTests),
         testCase(LexRedactorTests.__allTests__LexRedactorTests),
+        testCase(LazyStringTests.__allTests__LazyStringTests),
         testCase(LexerTests.__allTests__LexerTests),
         testCase(LogLoaderTests.__allTests__LogLoaderTests),
         testCase(LogFinderTests.__allTests__LogFinderTests),

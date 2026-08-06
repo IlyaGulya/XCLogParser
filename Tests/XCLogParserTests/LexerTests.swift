@@ -62,7 +62,7 @@ class LexerTests: XCTestCase {
 
         let tokens = try lexer.tokenize(contents: logContents, redacted: false, withoutBuildSpecificInformation: false)
 
-        XCTAssertEqual(tokens, [.int(0), .string(value), .int(1)])
+        XCTAssertEqual(tokens, [.int(0), .string(LazyString(value)), .int(1)])
     }
 
     func testTokenizeDouble() throws {
@@ -126,11 +126,11 @@ class LexerTests: XCTestCase {
         let tokens = try lexer.tokenize(contents: logContents, redacted: false, withoutBuildSpecificInformation: true)
         XCTAssertTrue(tokens.count == 4)
         let stringToken = tokens[3]
-        XCTAssertEqual(stringToken, Token.string("/Applications/Xcode.app/Contents/Developer/Toolchains/" +
+        XCTAssertEqual(stringToken, Token.string(LazyString("/Applications/Xcode.app/Contents/Developer/Toolchains/" +
             "XcodeDefault.xctoolchain/usr/bin/libtool: file: /Users/myuser/Library/Developer/Xcode/" +
             "DerivedData/Product/Build/Intermediates.noindex/Product.build/Debug-iphonesimulator/" +
             "Library.build/Objects-normal/x86_64/Object.o is not an object file (not allowed in a library) " +
-            "some hexadecimal number <hexadecimal_number>"))
+            "some hexadecimal number <hexadecimal_number>")))
     }
 
     func testTokenizeStringRedactedAndWithoutBuildSpecificInformation() throws {
@@ -143,11 +143,11 @@ class LexerTests: XCTestCase {
         let tokens = try lexer.tokenize(contents: logContents, redacted: true, withoutBuildSpecificInformation: true)
         XCTAssertTrue(tokens.count == 4)
         let stringToken = tokens[3]
-        XCTAssertEqual(stringToken, Token.string("/Applications/Xcode.app/Contents/Developer/Toolchains/" +
+        XCTAssertEqual(stringToken, Token.string(LazyString("/Applications/Xcode.app/Contents/Developer/Toolchains/" +
             "XcodeDefault.xctoolchain/usr/bin/libtool: file: /Users/<redacted>/Library/Developer/Xcode/" +
             "DerivedData/Product/Build/Intermediates.noindex/Product.build/Debug-iphonesimulator/" +
             "Library.build/Objects-normal/x86_64/Object.o is not an object file (not allowed in a library) " +
-            "some hexadecimal number <hexadecimal_number>"))
+            "some hexadecimal number <hexadecimal_number>")))
     }
 
     /// A `classNameRef` that names a class index which was never declared must not crash.
@@ -171,6 +171,8 @@ class LexerTests: XCTestCase {
                                                 withoutBuildSpecificInformation: false))
     }
 
+    /// The tokens must outlive the buffer they were scanned from.
+    ///
     /// `Scanner` now borrows an `UnsafeRawBufferPointer` instead of owning an `[UInt8]`, which is what
     /// removes the copy of the log. That is only safe because every `Token` owns its own `String`: if a
     /// token ever kept a range into the input instead, the values read here would be garbage. This test
@@ -192,9 +194,8 @@ class LexerTests: XCTestCase {
         for _ in 0..<64 {
             _ = Data(repeating: 0xAA, count: 4096)
         }
-        XCTAssertEqual(tokens.last, .string(expected))
+        XCTAssertEqual(tokens.last, .string(LazyString(expected)))
     }
-
 
     /// `TokenType(byte:)` replaced `TokenType(rawValue: String(UnicodeScalar(byte)))` in the lexer's
     /// hot path. The two must agree for every possible byte, not just the eight delimiters - a byte
@@ -268,8 +269,6 @@ class LexerTests: XCTestCase {
         }
     }
 
-    /// The tokens must outlive the buffer they were scanned from.
-    ///
     /// Malformed input must fail identically through both entry points, rather than one throwing and the
     /// other returning partial tokens.
     func testTokenizeBytesRejectsWhatTokenizeContentsRejects() {
@@ -298,6 +297,7 @@ class LexerTests: XCTestCase {
     }
 
     /// Generated SLF documents, so agreement does not rest on the handful of shapes written by hand.
+
     func testTokenizeBytesMatchesTokenizeContentsOnGeneratedInput() throws {
         // A fixed seed rather than a random one: a failure has to be reproducible.
         var state: UInt64 = 0x2545_F491_4F6C_DD1D

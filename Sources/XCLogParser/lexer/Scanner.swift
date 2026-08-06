@@ -193,6 +193,17 @@ final class Scanner {
         return value < radix ? value : nil
     }
 
+    /// Consumes `count` bytes and returns the range they occupied, without decoding them.
+    ///
+    /// The `scan(count:)` of the deferred path: same bounds checks, same offset advance, no `String`.
+    func skip(count: Int) -> Range<Int>? {
+        let endOffset = offset + count
+        guard count >= 0, endOffset <= bytes.count else { return nil }
+        let range = offset..<endOffset
+        self.offset = endOffset
+        return range
+    }
+
     func moveOffset(by value: Int) {
         self.offset += value
     }
