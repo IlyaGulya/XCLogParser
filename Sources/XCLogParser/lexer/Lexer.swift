@@ -52,7 +52,39 @@ public final class Lexer {
     public func tokenize(contents: String,
                          redacted: Bool,
                          withoutBuildSpecificInformation: Bool) throws -> [Token] {
-        let scanner = Scanner(string: contents)
+        return try tokenize(scanner: Scanner(string: contents),
+                            redacted: redacted,
+                            withoutBuildSpecificInformation: withoutBuildSpecificInformation)
+    }
+
+    /// Tokenizes an xcactivitylog held as `Data`.
+    ///
+    /// The entry point for a real log, and the one the library and the benchmark both use. An
+    /// `.xcactivitylog` is `Data` on disk, so this is where the bytes already are.
+    ///
+    /// It copies today: `Scanner` requires a `String`, so this decodes the whole log into one before
+    /// scanning it. That copy is what later commits in this branch remove, by teaching `Scanner` to
+    /// borrow the bytes instead of owning a decoded copy. The entry point exists from here so that
+    /// every measurement of that work times the same call, rather than timing `tokenize(contents:)`
+    /// until the day the byte path appears and then silently switching over.
+    ///
+    /// - parameter data: The decompressed .xcactivitylog.
+    /// - parameter redacted: If true, the user's directory will be replaced by `<redacted>`.
+    /// - parameter withoutBuildSpecificInformation: If true, build specific information is removed.
+    /// - returns: An array of all the `Token` in the log.
+    /// - throws: An error if the document is not a valid SLF document
+    public func tokenize(data: Data,
+                         redacted: Bool,
+                         withoutBuildSpecificInformation: Bool) throws -> [Token] {
+        return try tokenize(contents: String(decoding: data, as: UTF8.self),
+                            redacted: redacted,
+                            withoutBuildSpecificInformation: withoutBuildSpecificInformation)
+    }
+
+    /// The single tokenizing loop. Every public entry point funnels into this, so they cannot drift.
+    private func tokenize(scanner: Scanner,
+                          redacted: Bool,
+                          withoutBuildSpecificInformation: Bool) throws -> [Token] {
 
         guard scanSLFHeader(scanner: scanner) else {
             throw XCLogParserError.invalidLogHeader(filePath)

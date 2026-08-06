@@ -42,3 +42,39 @@ final class MemoryOutput: ReporterOutput {
         self.report = data
     }
 }
+
+/// A `StreamingReporterOutput` that counts the bytes and drops them.
+///
+/// The counterpart to `MemoryOutput`: this one takes the path the CLI takes. It deliberately does
+/// *not* retain the chunks, because not holding the whole report is the entire point of streaming -
+/// keeping them would make this stage measure the buffered path with extra steps.
+final class CountingStreamOutput: StreamingReporterOutput {
+    var byteCount = 0
+    var chunkCount = 0
+
+    /// Set when the reporter buffered the whole report instead of streaming it.
+    ///
+    /// No reporter streams yet - `JsonReporter` gains that later in this branch - so this is the path
+    /// taken today, and it must not be an error: a sweep measuring every commit would then die on
+    /// every point before streaming lands. It must not be recorded as a streaming measurement either,
+    /// since what ran was the buffered path. The caller checks this and leaves the stage unmeasured.
+    private(set) var fellBackToBuffering = false
+
+    func write(report: Any) throws {
+        fellBackToBuffering = true
+        byteCount = (report as? Data)?.count ?? 0
+        chunkCount = 0
+    }
+
+    func beginStreaming() throws {
+        byteCount = 0
+        chunkCount = 0
+    }
+
+    func write(chunk: Data) throws {
+        byteCount += chunk.count
+        chunkCount += 1
+    }
+
+    func endStreaming() throws {}
+}

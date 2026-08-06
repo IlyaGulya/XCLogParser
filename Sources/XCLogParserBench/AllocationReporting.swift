@@ -89,7 +89,17 @@ extension LogReport {
 
         let totals = Stage.allCases.compactMap { counts(for: $0) }.reduce(AllocationCounts.zero, +)
         for stage in Stage.allCases {
-            guard let stageCounts = counts(for: stage) else { continue }
+            guard let stageCounts = counts(for: stage) else {
+                // Printed rather than skipped. A stage that silently vanishes from the table reads as
+                // one that allocated nothing worth a row, which is the same false negative the timing
+                // table used to produce for an unselected encode path.
+                print("   \(stage.label.padding(toLength: 24, withPad: " ", startingAt: 0))"
+                    + "\("-".padding(toLength: 14, withPad: " ", startingAt: 0))"
+                    + "\("-".padding(toLength: 9, withPad: " ", startingAt: 0))"
+                    + "\("-".padding(toLength: 14, withPad: " ", startingAt: 0))"
+                    + "not run")
+                continue
+            }
             let share = totals.allocations > 0
                 ? Double(stageCounts.allocations) / Double(totals.allocations) * 100
                 : 0
@@ -117,6 +127,34 @@ extension LogReport {
     /// is judged by. Deliberately absolute and never a percentage - a change to total memory moves every
     /// other stage's share even when that stage's own cost did not move, the same trap already documented
     /// for time shares in Benchmarks/README.md.
+    /// One row per stage: footprint, its delta, and how much the peak RSS rose.
+    private func printMemoryRows() {
+        var previous: Double = 0
+        var previousPeak: Double = 0
+        for stage in Stage.allCases {
+            // The peak-RSS rise is printed for every stage that ran, including the encode path whose
+            // footprint is not falsifiable: the two metrics fail in different ways, and the high-water
+            // mark is not affected by the allocator having kept the other path's pages.
+            let peakRise = residentPeakRise(for: stage, previous: &previousPeak)
+            guard let footprint = footprint(for: stage) else {
+                continue
+            }
+            guard footprintIsFalsifiable(for: stage) else {
+                // The number exists but would be a lie of omission: it is near-zero by construction.
+                print("   \(stage.label.padding(toLength: 24, withPad: " ", startingAt: 0))"
+                    + "\("not falsifiable".padding(toLength: 26, withPad: " ", startingAt: 0))"
+                    + peakRise)
+                continue
+            }
+            print("   \(stage.label.padding(toLength: 24, withPad: " ", startingAt: 0))"
+                + "\(formatBytes(Int(footprint)).padding(toLength: 14, withPad: " ", startingAt: 0))"
+                + String(format: "%+.1f MB", (footprint - previous) / 1_048_576)
+                    .padding(toLength: 12, withPad: " ", startingAt: 0)
+                + peakRise)
+            previous = footprint
+        }
+    }
+
     func printMemoryReport() {
         print("")
         guard memoryIsMeaningful else {
@@ -128,25 +166,11 @@ extension LogReport {
         }
         print("   \("Stage".padding(toLength: 24, withPad: " ", startingAt: 0))"
             + "\("footprint".padding(toLength: 14, withPad: " ", startingAt: 0))"
-            + "delta")
-        print("   " + String(repeating: "─", count: 52))
-        var previous: Double = 0
-        for stage in Stage.allCases {
-            guard let footprint = footprint(for: stage) else {
-                continue
-            }
-            guard footprintIsFalsifiable(for: stage) else {
-                // The number exists but would be a lie of omission: it is near-zero by construction.
-                print("   \(stage.label.padding(toLength: 24, withPad: " ", startingAt: 0))"
-                    + "not falsifiable here (ran after the other encode path)")
-                continue
-            }
-            print("   \(stage.label.padding(toLength: 24, withPad: " ", startingAt: 0))"
-                + "\(formatBytes(Int(footprint)).padding(toLength: 14, withPad: " ", startingAt: 0))"
-                + String(format: "%+.1f MB", (footprint - previous) / 1_048_576))
-            previous = footprint
-        }
-        print("   " + String(repeating: "─", count: 52))
+            + "\("delta".padding(toLength: 12, withPad: " ", startingAt: 0))"
+            + "peak RSS rise")
+        print("   " + String(repeating: "─", count: 66))
+        printMemoryRows()
+        print("   " + String(repeating: "─", count: 66))
         if encodePath == .both {
             print("   Encode memory: only \(encodePath.trustedFootprintStage.label) is measured against an")
             print("   untouched heap. The other path ran second, and phys_footprint never gives pages")

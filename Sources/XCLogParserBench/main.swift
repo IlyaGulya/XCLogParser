@@ -86,6 +86,12 @@ struct IterationResult {
     var timings: [Stage: Double] = [:]
     /// Phys footprint immediately after each stage, while that stage's output is still alive.
     var footprints: [Stage: UInt64] = [:]
+    /// The process-wide peak RSS as of the end of each stage.
+    ///
+    /// Cumulative by nature - the kernel's high-water mark cannot be reset - so the useful figure is
+    /// the *rise* from one stage to the next, which is what the report prints. Unlike `footprints`,
+    /// this catches memory a stage allocated and released before it returned.
+    var residentPeaks: [Stage: UInt64] = [:]
     /// Allocation and retain/release events per stage. A stage is absent here when the runtime hooks
     /// are unavailable - distinct from a stage present with zeros, which means it genuinely allocated
     /// nothing.
@@ -156,9 +162,15 @@ struct LogBenchmark {
         result.baselineFootprint = baselineFootprint
 
         func recordFootprint(_ stage: Stage, into result: inout IterationResult) {
-            let footprint = memorySample().footprint
-            result.footprints[stage] = footprint
-            result.peakFootprint = max(result.peakFootprint, footprint)
+            let sample = memorySample()
+            result.footprints[stage] = sample.footprint
+            result.peakFootprint = max(result.peakFootprint, sample.footprint)
+            // Peak RSS as well as footprint, because the two see different things. A stage that builds
+            // a big buffer and frees it before returning is invisible to `footprint` - the reading is
+            // taken after the stage, by which time the buffer is gone - but the kernel's high-water
+            // mark remembers it. That transient double is exactly what a "copy the report once more"
+            // change costs, and measuring it needed a separate CLI run until now.
+            result.residentPeaks[stage] = sample.residentPeak
         }
 
         /// Times and counts `body` as `stage`, then reads the footprint while its output is still alive.
@@ -180,17 +192,19 @@ struct LogBenchmark {
         // The inflate the CLI runs. `LogLoader.loadBytesFromURL` is read-then-`Gunzip.inflate`, and the
         // read and gunzip stages here time those two halves separately, so they sum to the shipped read
         // path. `Gunzip.inflate` is called directly rather than through `loadBytesFromURL` only because
-        // the latter would re-read the file inside the gunzip stage. This used to call GzipSwift's
-        // `data.gunzipped()`, which grows its output buffer instead of preallocating from the gzip ISIZE
-        // hint; time agreed within noise but it overstated peak footprint by ~37 MB.
-        let unzipped = try runStage(.gunzip) { try data.gunzipped() }
+        // the latter would re-read the file inside the gunzip stage.
+        let unzipped = try runStage(.gunzip) { try Gunzip.inflate(data) }
         result.unzippedBytes = unzipped.count
 
         result.utf8ByteCount = unzipped.count
 
+        // `tokenize(data:)`, not `tokenize(contents:)`: the byte entry point is the one the library uses
+        // on a real log, so it is the one whose cost is worth knowing. Both go through the same loop
+        // today and the `Data` overload decodes a `String` to get there - the copies under it are what
+        // this branch removes, and holding the call site still is what makes those removals comparable.
         let lexer = Lexer(filePath: url.path)
         let tokens = try runStage(.tokenize) {
-            try lexer.tokenize(contents: String(decoding: unzipped, as: UTF8.self),
+            try lexer.tokenize(data: unzipped,
                                redacted: redacted,
                                withoutBuildSpecificInformation: withoutBuildSpecificInformation)
         }
@@ -265,6 +279,25 @@ struct LogBenchmark {
             withExtendedLifetime(output) {}
         }
 
+        if encodePath.measures(.encodeStreaming) {
+            // Measured with the report released as it goes - that being the whole point, retaining the
+            // chunks here would measure the buffered path with extra steps.
+            let streamOutput = CountingStreamOutput()
+            let streamed = try measureWithCounts {
+                try JsonReporter().report(build: buildStep, output: streamOutput, rootOutput: "")
+            }
+            // Only recorded when the report was actually streamed. No reporter streams yet, so this is
+            // skipped today; filing the buffered fallback under "Encode JSON (streaming)" would put a
+            // number against a path that did not run.
+            if !streamOutput.fellBackToBuffering {
+                result.timings[.encodeStreaming] = streamed.seconds
+                result.counts[.encodeStreaming] = streamed.counts
+                result.streamedBytes = streamOutput.byteCount
+                result.chunkCount = streamOutput.chunkCount
+                recordFootprint(.encodeStreaming, &result)
+            }
+            withExtendedLifetime(buildStep) {}
+        }
     }
 }
 
