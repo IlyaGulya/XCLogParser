@@ -87,6 +87,19 @@ struct LogReport {
         Stats(samples: iterations.compactMap { $0.timings[stage] })
     }
 
+    /// The stage's timings, or `nil` when it never ran in this process.
+    ///
+    /// A stage that was not selected has no samples, and `Stats` of no samples is all zeros - which
+    /// printed as `0.0 ms`, indistinguishable from a stage that ran and cost nothing. That is not a
+    /// cosmetic difference: sweeping this branch with `--encode-path buffered` reported an exact
+    /// `0.0 ms` and zero allocations for the commit that introduced streaming, and it was read as
+    /// "this change does nothing" when the truth was "this path was never executed". The same
+    /// mistake, in three different disguises, is the most expensive one this harness has made.
+    func measuredStats(for stage: Stage) -> Stats? {
+        let samples = iterations.compactMap { $0.timings[stage] }
+        return samples.isEmpty ? nil : Stats(samples: samples)
+    }
+
     /// Footprint after `stage`, over the baseline, from the first measured iteration only.
     ///
     /// # Why only the first iteration, and never an average
@@ -100,6 +113,29 @@ struct LogReport {
     /// returns iteration 2, so the metric looks stable while silently depending on how many iterations
     /// were requested. This was nearly reported as a working metric on that basis. Only the first pass
     /// over a fresh heap measures one iteration's cost, so repeat the whole *process* for another sample.
+    /// How much the process-wide peak RSS rose during `stage`, formatted for the memory table.
+    ///
+    /// The kernel's high-water mark only ever goes up, so the reading after a stage minus the reading
+    /// before it is what that stage added to the peak - zero when it stayed under an earlier stage's
+    /// high mark, which is a true statement about the peak rather than about the stage's allocations.
+    ///
+    /// This is the metric `footprint` cannot provide: a buffer allocated and freed *within* a stage is
+    /// already gone when the footprint is sampled, but the peak remembers it. Reported per stage so
+    /// that a transient double no longer needs a separate `/usr/bin/time -l` run to find.
+    ///
+    /// - parameter previous: The previous stage's peak, updated in place.
+    func residentPeakRise(for stage: Stage, previous: inout Double) -> String {
+        guard memoryIsMeaningful,
+              let first = iterations.first,
+              let peak = first.residentPeaks[stage] else {
+            return "-"
+        }
+        let value = Double(peak)
+        defer { previous = value }
+        guard previous > 0 else { return "(baseline)" }
+        return String(format: "%+.1f MB", (value - previous) / 1_048_576)
+    }
+
     func footprint(for stage: Stage) -> Double? {
         guard let first = iterations.first, let value = first.footprints[stage] else {
             return nil
@@ -170,7 +206,10 @@ struct LogReport {
             let agree = last.streamedBytes == last.encodedBytes
             print("   streamed: \(formatBytes(last.streamedBytes)) in \(last.chunkCount) chunks   "
                 + (agree ? "(matches buffered)" : "*** DISAGREES WITH BUFFERED PATH ***"))
-        } else if encodePath == .streaming {
+        } else if encodePath == .streaming, last.timings[.encodeStreaming] != nil {
+            // Suppressed when the reporter has no streaming path: it then buffered the report, the
+            // stage was not recorded, and "streamed: 0.0 MB in 0 chunks" would describe a run that
+            // never happened rather than a report that was empty.
             print("   streamed: \(formatBytes(last.streamedBytes)) in \(last.chunkCount) chunks   "
                 + "(buffered path not run, so no cross-check)")
         }
@@ -194,6 +233,15 @@ struct LogReport {
         return row + share
     }
 
+    /// A row for a stage this process never ran, so that it cannot be read as a stage costing nothing.
+    private func unmeasuredRow(_ label: String) -> String {
+        var row = "   \(label.padding(toLength: 24, withPad: " ", startingAt: 0))"
+        for _ in 0..<(Self.reportedPercentiles.count + 1) {
+            row += "-".padding(toLength: 12, withPad: " ", startingAt: 0)
+        }
+        return row + "not run"
+    }
+
     func printReport() {
         let last = iterations.last!
         printHeader()
@@ -208,7 +256,10 @@ struct LogReport {
 
         let total = totalStats.median
         for stage in Stage.allCases {
-            let stats = self.stats(for: stage)
+            guard let stats = measuredStats(for: stage) else {
+                print(unmeasuredRow(stage.label))
+                continue
+            }
             let share = total > 0 ? stats.median / total * 100 : 0
             print(timingRow(stage.label, stats, share: String(format: "%5.1f%%", share)))
         }

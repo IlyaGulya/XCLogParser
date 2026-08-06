@@ -27,6 +27,37 @@ public protocol ReporterOutput {
 
 }
 
+/// An output that can take a report in pieces, so a large report never has to exist in one buffer.
+///
+/// Kept as a separate protocol rather than as defaulted requirements on `ReporterOutput`: a reporter
+/// has to know whether streaming is actually supported, because if it is not, the reporter must keep
+/// building the whole report as before. A defaulted requirement cannot be asked that question - it
+/// always answers "yes" and silently buffers, which just moves the memory it was meant to save.
+///
+/// Adding a protocol breaks nothing. Existing `ReporterOutput` conformers, in this package or outside
+/// it, are unaffected.
+///
+/// No reporter drains it yet - `JsonReporter` still builds the whole report and hands it over in one
+/// `write(report:)`. The protocol lands here so the benchmark can time both ways of getting a report
+/// out from the branch's first commit, and so the commit that teaches the reporter to stream is a
+/// change to the reporter alone, measured at a call site that did not move under it.
+public protocol StreamingReporterOutput: ReporterOutput {
+
+    /// Prepares the output to receive a report in pieces.
+    ///
+    /// Any pre-flight check belongs here, not on the first chunk: `FileOutput` refuses to overwrite an
+    /// existing file, and that has to fail before a single byte is emitted.
+    func beginStreaming() throws
+
+    /// Appends the next piece of the report. Only valid between `beginStreaming()` and
+    /// `endStreaming()`.
+    func write(chunk: Data) throws
+
+    /// Finishes the streamed write, flushing and closing whatever `beginStreaming()` opened.
+    func endStreaming() throws
+
+}
+
 public struct ReporterOutputFactory {
 
     /// Creates a `ReporterOutput` based on the path passed

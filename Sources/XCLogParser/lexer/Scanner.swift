@@ -26,6 +26,15 @@ final class Scanner {
 
     private(set) var offset: Int
 
+    /// How many bytes there are to scan.
+    ///
+    /// Exposed so `Lexer.tokenize` can size its token array from the input without knowing how the
+    /// scanner stores it - the input arrives as a `String`, an `[UInt8]` or a `Data` depending on the
+    /// entry point, and the loop is shared.
+    var byteCount: Int {
+        bytes.count
+    }
+
     var isAtEnd: Bool {
         offset >= bytes.count
     }
