@@ -16,3 +16,11 @@ type_name:
 identifier_name:
   min_length: 3
   max_length: 60
+  allowed_symbols: []
+  # The percentile cases in the benchmark's Stats.swift. These are the standard names for these
+  # percentiles - the same ones ordo-one's package-benchmark and every HDR histogram tool use - so
+  # lengthening them to satisfy min_length would make the tables and the JSON keys wrong rather than
+  # clearer.
+  excluded:
+    - p0
+    - p25

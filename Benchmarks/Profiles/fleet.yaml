@@ -1,0 +1,57 @@
+# Models the second log the recorded measurements used: a fleet log, larger than the baseline
+# but with diagnostics spread thinner, and warnings only.
+#
+# Two logs are needed because the two are not the same workload scaled. The recorded numbers show
+# the *smaller* log (167 MB) reaching a *higher* peak in the real CLI than this one (5859 MB
+# against 3116 MB), so a single profile scaled up and down cannot stand in for both. Where they
+# disagree is the point:
+#
+#   - `": error:"` does not occur once in 278 MB of this log. That is what made the two-searches-
+#     over-the-same-bytes finding measurable (parseSwiftIssues 31.4% -> 17.8%): the first search
+#     always ran to the end of every line and always failed. A profile with errors in it does not
+#     reproduce that.
+#   - Diagnostics are spread over more sections but sit less deep, so the notice tail is shorter
+#     than the baseline's.
+
+sectionCount: 42148
+
+# Higher than the baseline's 6.8%, but with a much shorter tail below: this log carries more
+# notices (~21.5k against ~12.8k) spread thinly over many sections, where the baseline piles fewer
+# notices into deeper sections. Same total, different distribution.
+diagnosticDensity: 0.20
+
+# Larger sections than the baseline, which is where the extra volume comes from: fewer sections
+# (42k against 54k) holding more text each.
+sectionTextBytes:
+  min: 800
+  max: 12300
+
+# Shorter tail than the baseline. Diagnostics here are spread across sections rather than piling
+# up in a few, so the deep buckets carry much less weight and there is no 909-notice section.
+noticesPerSection:
+  buckets:
+    - count: 1
+      weight: 700
+    - count: 2
+      weight: 200
+    - count: 4
+      weight: 70
+    - count: 9
+      weight: 22
+    - count: 27
+      weight: 6
+    - count: 80
+      weight: 1.5
+
+detailVariety: 0.30
+colonByteFrequency: 0.0078
+clangSectionShare: 0.18
+targetCount: 40
+nestingDepth: 2
+
+# Zero, deliberately. `": error:"` never appears in the real fleet log, and that absence is what
+# the marker-scanning measurement depended on. This is the field most likely to be changed by
+# accident, so: setting it above 0 makes this profile stop modelling the log it is named after.
+errorShare: 0.0
+
+seed: 20260805

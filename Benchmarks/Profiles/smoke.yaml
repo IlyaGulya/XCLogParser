@@ -1,0 +1,26 @@
+# A tiny log for checking that the harness runs at all. Too small to measure anything: at this
+# size stage timings are dominated by process startup, and the baseline comparison will flag
+# ordinary noise as a regression.
+#
+# Use baseline.yaml for actual numbers.
+
+sectionCount: 200
+diagnosticDensity: 0.1
+sectionTextBytes:
+  min: 200
+  max: 1200
+noticesPerSection:
+  buckets:
+    - count: 1
+      weight: 70
+    - count: 3
+      weight: 25
+    - count: 12
+      weight: 5
+detailVariety: 0.5
+colonByteFrequency: 0.0078
+clangSectionShare: 0.25
+targetCount: 4
+nestingDepth: 2
+errorShare: 0.05
+seed: 1
