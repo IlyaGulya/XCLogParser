@@ -85,7 +85,7 @@ extension Notice {
                 while cursor < bytes.count, bytes[cursor] == UInt8(ascii: "]") {
                     cursor += 1
                 }
-                flags?.append(flagString(from: bytes, range: index..<cursor))
+                flags?.append(bytes.string(in: index..<cursor))
                 index = cursor
             }
             return true
@@ -109,16 +109,5 @@ extension Notice {
         default:
             return false
         }
-    }
-
-    /// Materialises `bytes[range]` as a `String`.
-    private static func flagString(from bytes: UnsafeBufferPointer<UInt8>,
-                                   range: Range<Int>) -> String {
-        guard let base = bytes.baseAddress else {
-            return ""
-        }
-        // swiftlint:disable:next optional_data_string_conversion
-        return String(decoding: UnsafeBufferPointer(start: base + range.lowerBound,
-                                                    count: range.count), as: UTF8.self)
     }
 }

@@ -100,14 +100,14 @@ extension Notice {
     private static func isFusedWithNextCluster(bytes: UnsafeBufferPointer<UInt8>,
                                                at index: Int,
                                                limit: Int) -> Bool {
-        guard index < limit, bytes[index] >= 0x80, let base = bytes.baseAddress else {
+        guard index < limit, bytes[index] >= 0x80 else {
             return false
         }
         // A UTF-8 scalar is at most 4 bytes, so decoding that much is enough to recover the first one.
+        // Unlike every other use of `string(in:)` this slice may well cut a scalar in half, at its far
+        // end - which is harmless, because only the first scalar is read.
         let width = min(4, limit - index)
-        let scalarBytes = UnsafeBufferPointer(start: base + index, count: width)
-        // swiftlint:disable:next optional_data_string_conversion
-        guard let scalar = String(decoding: scalarBytes, as: UTF8.self).unicodeScalars.first else {
+        guard let scalar = bytes.string(in: index..<(index + width)).unicodeScalars.first else {
             return false
         }
         // "x" is a stand-in for the marker's trailing ":" - any single ASCII cluster behaves the same.
