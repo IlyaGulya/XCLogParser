@@ -24,6 +24,9 @@ public final class FileOutput: ReporterOutput {
 
     let path: String
 
+    /// Open only for the duration of a streamed write. See `beginStreaming()`.
+    private var streamHandle: FileHandle?
+
     public init(path: String) {
         let absolutePath = Path(path).absolute()
         self.path = absolutePath.string
@@ -71,6 +74,40 @@ public final class FileOutput: ReporterOutput {
             }
             fileHandle.write(data)
         }
+        print("File written to \(path)")
+    }
+
+}
+
+extension FileOutput: StreamingReporterOutput {
+
+    /// Creates the file and opens it for appending.
+    ///
+    /// The "a file already exists" check happens here, which is the same point in the sequence as in
+    /// `write(data:)`: before any byte of the report is emitted. Ordering it any later would leave a
+    /// truncated file behind on a path that used to fail cleanly.
+    public func beginStreaming() throws {
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: path) {
+            throw XCLogParserError.errorCreatingReport("Can't write the report to \(path). A file already exists.")
+        }
+        guard fileManager.createFile(atPath: path, contents: nil, attributes: nil),
+              let handle = FileHandle(forWritingAtPath: path) else {
+            throw XCLogParserError.errorCreatingReport("Can't write the report to \(path). File can't be created.")
+        }
+        streamHandle = handle
+    }
+
+    public func write(chunk: Data) throws {
+        guard let handle = streamHandle else {
+            throw XCLogParserError.errorCreatingReport("Can't write the report to \(path). Stream is not open.")
+        }
+        handle.write(chunk)
+    }
+
+    public func endStreaming() throws {
+        streamHandle?.closeFile()
+        streamHandle = nil
         print("File written to \(path)")
     }
 
