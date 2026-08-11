@@ -1043,7 +1043,7 @@ rewrite that bought almost nothing.
 that, `": warning:"` — the direct translation of
 `range(of:) ?? range(of:)`. Each search walked the whole line comparing its
 marker's first byte at every offset, so every line was scanned twice. On a real
-log that is close to worst case: `": error:"` does not occur *once* in
+fleet log that is close to worst case: `": error:"` does not occur *once* in
 278MB, so the first search always ran to the end and always failed.
 
 Both markers start with `":"`, and only 0.78% of that log's bytes are `":"`. One
