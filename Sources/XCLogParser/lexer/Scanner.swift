@@ -48,10 +48,13 @@ final class Scanner {
     func scan(count: Int) -> String? {
         let endOffset = self.offset + count
 
-        guard count >= 0,
-              endOffset <= bytes.count,
-              let result = String(bytes: bytes[offset..<endOffset], encoding: .utf8)
-        else { return nil }
+        guard count >= 0, endOffset <= bytes.count else { return nil }
+
+        // Behaviour change on malformed input only: `String(bytes:encoding:)` returned nil for invalid
+        // UTF-8, failing the whole line, where `String(decoding:)` substitutes U+FFFD. Valid UTF-8 -
+        // every real log, and every fixture here - decodes identically, and this avoids the copy the
+        // failable initialiser makes.
+        let result = string(in: offset..<endOffset)
 
         self.offset += count
 
@@ -69,22 +72,104 @@ final class Scanner {
         return true
     }
 
-    /// Scans while the current byte is in `allowedBytes`.
-    /// - parameter allowedBytes: The single-byte characters to accept. Callers are expected to build
-    /// this set once and reuse it; converting a `Set<Character>` here would reallocate it on every call,
-    /// and this is the hottest path in the lexer.
-    func scanCharacters(from allowedBytes: Set<UInt8>) -> String? {
+    /// Scans while the current byte is in `allowedBytes`, returning the byte range consumed.
+    ///
+    /// Returns a range rather than a `String` because the callers do not want a string: the lexer
+    /// either parses the run as a number or looks at its first byte. Materialising one meant a heap
+    /// allocation plus a UTF-8 validation pass per token, tens of millions of times per log - and
+    /// `String(bytes:encoding:)` also copies. `scanCharacters` was the hottest function in the lexer;
+    /// see `Lexer.scanPayload` and `unsignedInteger(in:)` for what replaced the parsing.
+    ///
+    /// - parameter allowedBytes: The bytes to accept. Callers build this once and reuse it.
+    func scanCharacters(from allowedBytes: ByteSet) -> Range<Int> {
         let startOffset = offset
 
-        while !isAtEnd {
-            guard allowedBytes.contains(bytes[offset]) else {
-                break
-            }
-
+        while offset < bytes.count, allowedBytes.contains(bytes[offset]) {
             self.offset += 1
         }
 
-        return String(bytes: bytes[startOffset..<offset], encoding: .utf8)
+        return startOffset..<offset
+    }
+
+    /// The byte at `index`, or `nil` when it is out of bounds.
+    func byte(at index: Int) -> UInt8? {
+        guard index >= 0, index < bytes.count else {
+            return nil
+        }
+        return bytes[index]
+    }
+
+    /// The bytes in `range`, decoded as UTF-8.
+    ///
+    /// Every caller that still needs a `String` goes through here, so the decode stays in one place.
+    func string(in range: Range<Int>) -> String {
+        // swiftlint:disable:next optional_data_string_conversion
+        return String(decoding: bytes[range], as: UTF8.self)
+    }
+
+    /// Parses `bytes[range]` as a base-`radix` unsigned integer, or `nil` if it is empty or contains a
+    /// digit that is not valid in that radix.
+    ///
+    /// This is what lets `scanCharacters` return a range: the lexer's payloads are all numbers - a
+    /// decimal length, a class-name index, a hex-encoded double - so they can be accumulated straight
+    /// from the bytes instead of being built into a `String` and handed to `UInt64.init(_:)`.
+    ///
+    /// Overflow returns `nil` rather than trapping, which matches what `UInt64("...")` does on a run of
+    /// digits too long to represent.
+    func unsignedInteger(in range: Range<Int>, radix: UInt64 = 10) -> UInt64? {
+        // A sign is accepted, to stay interchangeable with the initializer this replaced: `UInt64("+1")`
+        // is 1, and `UInt64("-0")` is 0 - negative zero being the one negative an unsigned type can
+        // represent. Both were found by differential sweep, not by reading the documentation. The
+        // payload byte set contains neither sign, so neither can arise from the lexer, but the two
+        // should not differ where they need not.
+        var digits = range
+        var negative = false
+        if let first = byte(at: digits.lowerBound),
+           first == UInt8(ascii: "+") || first == UInt8(ascii: "-") {
+            negative = first == UInt8(ascii: "-")
+            digits = (digits.lowerBound + 1)..<digits.upperBound
+        }
+        guard !digits.isEmpty else {
+            return nil
+        }
+        var value: UInt64 = 0
+        for index in digits {
+            guard let digit = Scanner.digitValue(bytes[index], radix: radix) else {
+                return nil
+            }
+            let (multiplied, overflowedMultiply) = value.multipliedReportingOverflow(by: radix)
+            guard !overflowedMultiply else {
+                return nil
+            }
+            let (added, overflowedAdd) = multiplied.addingReportingOverflow(digit)
+            guard !overflowedAdd else {
+                return nil
+            }
+            value = added
+        }
+        // "-0" is 0; any other negative has no unsigned representation.
+        if negative && value != 0 {
+            return nil
+        }
+        return value
+    }
+
+    /// The value of an ASCII digit in `radix`, or `nil` if `byte` is not one.
+    ///
+    /// Both cases are accepted for hex digits, matching `Int(_:radix:)`.
+    private static func digitValue(_ byte: UInt8, radix: UInt64) -> UInt64? {
+        let value: UInt64
+        switch byte {
+        case UInt8(ascii: "0")...UInt8(ascii: "9"):
+            value = UInt64(byte - UInt8(ascii: "0"))
+        case UInt8(ascii: "a")...UInt8(ascii: "z"):
+            value = UInt64(byte - UInt8(ascii: "a")) + 10
+        case UInt8(ascii: "A")...UInt8(ascii: "Z"):
+            value = UInt64(byte - UInt8(ascii: "A")) + 10
+        default:
+            return nil
+        }
+        return value < radix ? value : nil
     }
 
     func moveOffset(by value: Int) {
@@ -93,6 +178,6 @@ final class Scanner {
 
     func preview(count: Int) -> String {
         let endOffset = min(offset + count, bytes.count)
-        return String(decoding: bytes[offset..<endOffset], as: UTF8.self)
+        return string(in: offset..<endOffset)
     }
 }

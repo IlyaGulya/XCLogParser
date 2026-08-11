@@ -57,6 +57,8 @@ extension LexerTests {
     //   `swift test --generate-linuxmain`
     // to regenerate.
     static let __allTests__LexerTests = [
+        ("testTokenTypeByteInitMatchesRawValueInitForEveryByte",
+         testTokenTypeByteInitMatchesRawValueInitForEveryByte),
         ("testTokenizeClassName", testTokenizeClassName),
         ("testTokenizeClassNameRef", testTokenizeClassNameRef),
         ("testTokenizeDouble", testTokenizeDouble),
@@ -167,9 +169,68 @@ extension SwiftCompilerParserTests {
     ]
 }
 
+extension ExactNeedleTests {
+    static let __allTests__ExactNeedleTests = [
+        ("testCombiningMarkAgreesWithFoundation", testCombiningMarkAgreesWithFoundation),
+        ("testEmptyNeedleMatchesFoundation", testEmptyNeedleMatchesFoundation),
+        ("testIsCaseSensitive", testIsCaseSensitive),
+        ("testMatchesFoundationContains", testMatchesFoundationContains),
+        ("testNonCombiningNonAsciiStillMatches", testNonCombiningNonAsciiStillMatches)
+    ]
+}
+
+extension ByteSetTests {
+    static let __allTests__ByteSetTests = [
+        ("testEmptySetContainsNothing", testEmptySetContainsNothing),
+        ("testFullSetContainsEverything", testFullSetContainsEverything),
+        ("testMatchesSetMembershipAcrossAllBytes", testMatchesSetMembershipAcrossAllBytes)
+    ]
+}
+
+extension ScannerNumberTests {
+    static let __allTests__ScannerNumberTests = [
+        ("testAgreesOnDecimalDigits", testAgreesOnDecimalDigits),
+        ("testAgreesOnGeneratedNumbers", testAgreesOnGeneratedNumbers),
+        ("testAgreesOnHexDigits", testAgreesOnHexDigits),
+        ("testAgreesOnOverflow", testAgreesOnOverflow),
+        ("testAgreesOnRejectedInput", testAgreesOnRejectedInput),
+        ("testEmptyRangeIsRejected", testEmptyRangeIsRejected)
+    ]
+}
+
+extension ClangWarningFlagsTests {
+    static let __allTests__ClangWarningFlagsTests = [
+        ("testAgreesAcrossEmbeddedNulBytes", testAgreesAcrossEmbeddedNulBytes),
+        ("testAgreesOnGeneratedText", testAgreesOnGeneratedText),
+        ("testAgreesOnNonAsciiFlags", testAgreesOnNonAsciiFlags),
+        ("testMatchesRegexOnPatternEdgeCases", testMatchesRegexOnPatternEdgeCases),
+        ("testMatchesRegexOnRealisticDiagnostics", testMatchesRegexOnRealisticDiagnostics),
+        ("testScannerAgreesOnGeneratedText", testScannerAgreesOnGeneratedText)
+    ]
+}
+
+extension ISO8601DateStringTests {
+    static let __allTests__ISO8601DateStringTests = [
+        ("testFractionCarriesIntoSeconds", testFractionCarriesIntoSeconds),
+        ("testFractionIsMillisecondsZeroExtended", testFractionIsMillisecondsZeroExtended),
+        ("testHalfMillisecondTieDivergesFromDateFormatter", testHalfMillisecondTieDivergesFromDateFormatter),
+        ("testKnownTimestamp", testKnownTimestamp),
+        ("testLeapDay", testLeapDay),
+        ("testMatchesDateFormatterAcrossCentury", testMatchesDateFormatterAcrossCentury),
+        ("testNegativeInterval", testNegativeInterval),
+        ("testReferenceEpoch", testReferenceEpoch),
+        ("testTypicalFourDecimalTimestampAgrees", testTypicalFourDecimalTimestampAgrees)
+    ]
+}
+
 public func __allTests() -> [XCTestCaseEntry] {
     return [
         testCase(ActivityParserTests.__allTests__ActivityParserTests),
+        testCase(ByteSetTests.__allTests__ByteSetTests),
+        testCase(ClangWarningFlagsTests.__allTests__ClangWarningFlagsTests),
+        testCase(ScannerNumberTests.__allTests__ScannerNumberTests),
+        testCase(ExactNeedleTests.__allTests__ExactNeedleTests),
+        testCase(ISO8601DateStringTests.__allTests__ISO8601DateStringTests),
         testCase(ChromeTracerOutputTests.__allTests__ChromeTracerOutputTests),
         testCase(IssuesReporterTests.__allTests__IssuesReporterTests),
         testCase(LexRedactorTests.__allTests__LexRedactorTests),

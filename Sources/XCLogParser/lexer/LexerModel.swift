@@ -34,6 +34,29 @@ public enum TokenType: String, CaseIterable {
             return "\($0)\($1.rawValue)"
         }
     }
+
+    /// Looks up a token type from its delimiter byte, without building a `String`.
+    ///
+    /// Do not replace this with `TokenType(rawValue: String(UnicodeScalar(byte)))`. That runs once
+    /// per token, allocating a single-character String and then running the synthesized raw-value
+    /// lookup as a sequence of full Unicode string comparisons.
+    ///
+    /// A byte switch is the same mapping: every raw value above is one ASCII character, so comparing
+    /// the byte is equivalent to comparing the one-character String it would have been wrapped in.
+    /// Kept next to the cases so the two cannot drift apart unnoticed.
+    init?(byte: UInt8) {
+        switch byte {
+        case UInt8(ascii: "#"): self = .int
+        case UInt8(ascii: "%"): self = .className
+        case UInt8(ascii: "@"): self = .classNameRef
+        case UInt8(ascii: "\""): self = .string
+        case UInt8(ascii: "^"): self = .double
+        case UInt8(ascii: "-"): self = .null
+        case UInt8(ascii: "("): self = .list
+        case UInt8(ascii: "*"): self = .json
+        default: return nil
+        }
+    }
 }
 
 public enum Token: CustomDebugStringConvertible, Equatable {
