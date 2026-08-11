@@ -23,25 +23,18 @@
 /// file within the file-length limit.
 extension Notice {
 
-    /// Copies `bytes[range]` onto the end of `out`.
-    static func append(range: Range<Int>,
-                       of bytes: UnsafeBufferPointer<UInt8>,
-                       to out: inout [UInt8]) {
-        guard let base = bytes.baseAddress else {
-            return
-        }
-        out.append(contentsOf: UnsafeBufferPointer(start: base + range.lowerBound,
-                                                   count: range.count))
-    }
-
-    /// Materialises `bytes[range]` as a `String`.
-    static func string(from bytes: UnsafeBufferPointer<UInt8>,
-                       range: Range<Int>) -> String {
+    /// `UnsafeBufferPointer.string(in:)`, kept local on purpose.
+    ///
+    /// This is the one call site where sharing the helper measures: routing these two calls through
+    /// the extension costs +14,225 allocations on the baseline log and +35,303 on the fleet log. See
+    /// `ByteSlice.swift` for what was tried and why the receiver rather than the code is the cause.
+    private static func string(from bytes: UnsafeBufferPointer<UInt8>,
+                               range: Range<Int>) -> String {
         guard let base = bytes.baseAddress else {
             return ""
         }
-        // Slices of the log's own UTF-8 cut at scalar boundaries, so the non-failable initializer is
-        // exact and cannot insert a replacement character.
+        // Slices of the log's own UTF-8 cut at "\r" and at the marker's ":", so the non-failable
+        // initializer is exact and cannot insert a replacement character.
         // swiftlint:disable:next optional_data_string_conversion
         return String(decoding: UnsafeBufferPointer(start: base + range.lowerBound,
                                                     count: range.count), as: UTF8.self)
@@ -80,18 +73,17 @@ extension Notice {
             } else {
                 joined.removeAll(keepingCapacity: true)
                 joined.reserveCapacity(line.count + continuations.reduce(0) { $0 + $1.count + 1 })
-                append(range: line, of: bytes, to: &joined)
+                bytes.append(range: line, to: &joined)
                 for continuation in continuations {
                     joined.append(UInt8(ascii: "\n"))
-                    append(range: continuation, of: bytes, to: &joined)
+                    bytes.append(range: continuation, to: &joined)
                 }
                 // Slices of the log's own UTF-8, cut only at "\r", so no scalar is split and the
                 // non-failable initializer is exact.
                 // swiftlint:disable:next optional_data_string_conversion
                 detail = String(decoding: joined, as: UTF8.self)
             }
-            detailsByLocation[string(from: bytes,
-                                     range: line.lowerBound..<currentKeyEnd)] = detail
+            detailsByLocation[string(from: bytes, range: line.lowerBound..<currentKeyEnd)] = detail
             currentLine = nil
             continuations.removeAll(keepingCapacity: true)
         }
