@@ -293,6 +293,22 @@ note: use 'updatedDoSomething' instead\r doSomething()\r        ^~~~~~~~~~~\r   
         XCTAssertEqual(text, build.notes?.first?.detail)
     }
 
+    /// A section with no messages yields no notices, however diagnostic-looking its text is.
+    ///
+    /// `parseFromLogSection` returns early for these rather than scanning the text twice to reach the
+    /// same answer. The text below would match both scanners - a clang `[-Wflag]` and a
+    /// `file:line:col: error:` marker - so it fails if the guard ever starts producing notices from
+    /// text alone.
+    func testSectionWithoutMessagesProducesNoNotices() throws {
+        let text = "/tmp/a.m:1:2: warning: implicit conversion [-Wshorten-64-to-32]\r"
+            + "/tmp/b.swift:3:4: error: cannot find 'x' in scope\r"
+        let fakeLog = getFakeIDEActivityLogWithMessages([], andText: text)
+        let build = try parser.parse(activityLog: fakeLog)
+        XCTAssertNil(build.warnings?.first)
+        XCTAssertNil(build.errors?.first)
+        XCTAssertNil(build.notes?.first)
+    }
+
     func testParseInterfaceBuilderWarning() throws {
         let timestamp = Date().timeIntervalSinceReferenceDate
         let memberId = IBMemberID(memberIdentifier: "ABC")
