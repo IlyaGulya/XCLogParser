@@ -80,6 +80,11 @@ extension Notice {
                         }
                         notice = notice.with(detail: swiftErrorDetails[errorLocation])
                     }
+                } else {
+                    // Every other type was handed the whole `logSection.text` as its detail, above.
+                    // That is the classification input, not this notice's diagnostic, and it is the
+                    // single largest cost in the whole tool - see `narrowedToOwnDiagnostic`.
+                    notice = notice.narrowedToOwnDiagnostic(details: swiftErrorDetails)
                 }
 
                 // Handle special cases
@@ -101,6 +106,39 @@ extension Notice {
             }
             return nil
         }.flatMap { $0 }
+    }
+
+    /// Replaces a detail that is the whole section text with just this notice's own diagnostic.
+    ///
+    /// # Why
+    ///
+    /// `parseFromLogSection` hands `logSection.text` to every `Notice` it builds. The text is needed to
+    /// *classify* the notice - an Interface Builder warning can only be recognised from it - but if it
+    /// then stays on as the *payload*, the section is repeated once per notice in it. A single step with
+    /// hundreds of warnings sharing one large text dominates the whole JSON report.
+    ///
+    /// In memory this is nearly free, which is why it survived several rounds of memory work: the
+    /// details are COW references to a shared buffer, so nothing shows up in a footprint measurement.
+    /// The cost is paid by the encoder, which serialises the full text again for each notice.
+    ///
+    /// # How
+    ///
+    /// `parseSwiftIssuesDetailsByLocation` already splits the text into per-location diagnostics, and is
+    /// already computed for this section. Swift issues have used it all along; this just gives every
+    /// other type the same treatment, keyed on the finished notice's own `documentURL` and position.
+    ///
+    /// # When the whole text is kept
+    ///
+    /// Only when this notice has no diagnostic of its own to point at. Those are the notices with no
+    /// location - "Building targets in dependency order", "Target dependency graph (308 targets)" - whose
+    /// section text is not a per-file diagnostic in the first place, so narrowing it would lose the only
+    /// information there is.
+    private func narrowedToOwnDiagnostic(details: [String: String]) -> Notice {
+        let location = documentURL.replacingOccurrences(of: "file://", with: "")
+        guard let own = details["\(location):\(startingLineNumber):\(startingColumnNumber):"] else {
+            return self
+        }
+        return with(detail: own)
     }
 
     /// Xcode reports the details of Swift errors and warnings as a mixed text with all the errors in a

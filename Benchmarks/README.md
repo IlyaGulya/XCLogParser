@@ -39,6 +39,25 @@ On a quiet host the same benchmark has a stddev under ~1% of the median. If
 stddev exceeds a few percent, or peak RSS shifts a lot between runs, discard
 the numbers — do not interpret them.
 
+A second occasion made the point again, with numbers worth keeping for calibration.
+The same commit and the same log, measured on a loaded workstation and then on an
+idle 12-core host:
+
+| | loaded (load avg ~190) | idle (load avg 1.7) |
+|---|---|---|
+| total | 1.3–3.4 s | **643.7 ms** |
+| stddev | 820 ms | **8.9 ms** |
+| agreement across 3 process runs | none | within 13 ms |
+
+Nothing about the binary changed. The loaded host cannot answer a timing question at
+all — not "roughly", not "as a lower bound". Memory figures are unaffected, since
+`phys_footprint` does not depend on scheduling, so a loaded machine is still fine for
+memory work; that is the only thing to do on it.
+
+If no idle machine is available locally, measuring over `ssh` on one is worth the
+setup: `rsync` the tree (excluding `.build`), build there, and run both the benchmark
+and `/usr/bin/time -l` on the real CLI.
+
 ### Load average is not sufficient — check for an EDR agent
 
 A managed Mac can show a perfectly healthy load average and still be unusable
@@ -395,6 +414,118 @@ moving an allocation, not deleting one.
 **Ask who else holds the value before removing an allocation.** A cost that is real,
 and even dominant in its own stage, is only worth removing if nothing downstream needs
 it materialised anyway.
+
+### Profile the real command, not just the library
+
+Profiling had only ever been pointed at `xclogparser-bench`, which stops at the
+`BuildStep` tree. Pointing DTrace at the actual CLI instead:
+
+```bash
+sudo dtrace -x ustackframes=40 \
+  -n 'profile-997 /pid == $target/ { @s[ustack(40)] = count(); }' \
+  -c "./.build/release/xclogparser parse --file <log> --reporter json" > cli.stacks
+```
+
+gave a completely different answer from every library profile before it (6,718
+samples, baseline log):
+
+| share | frame |
+|---|---|
+| **53.96%** | `Foundation JSONWriter.serializeString(_:)` |
+| 9.07% | `Foundation Array.append(contentsOf:)` |
+| 8.29% | `libswiftCore validateUTF8(_:)` |
+| 4.90% | `libswiftCore _Stdout.write(_:)` |
+
+~71% of the program is serializing strings and validating their UTF-8, and every one
+of the `serializeString` samples arrives via `serializeObjectElement` — object field
+values. The benchmark's 644 ms covers 14% of a 4.70 s command.
+
+Confirmed causally with flags rather than left as a correlation:
+
+| | time | peak | output |
+|---|---|---|---|
+| default | 6.96 s | 5585 MB | 2076 MB |
+| `--trunc_large_issues` | 2.72 s | 1921 MB | 617 MB |
+| `--omit_warnings --omit_notes` | **1.39 s** | **913 MB** | **132 MB** |
+
+### The output format is rarely the thing to redesign
+
+The instinct when a 14 MB input yields a 2 GB file is to change the on-disk model —
+shorter keys, a binary encoding, dropped fields. Byte-accounting the output first says
+otherwise:
+
+    1858.5 MB   89.5%  detail
+       26.7 MB    1.3%  signature
+       12.1 MB    0.6%  documentURL
+        9.4 MB    0.5%  title
+       ...everything else combined: ~65 MB
+
+One field is 89.5% of the file. A new encoding would carry the same duplicated text
+and win only the syntax overhead — `json` and `flatJson` already differ by under 3%
+despite different shapes, while `summaryJson`, which omits per-issue detail, is 11×
+faster on the same tree. **Account for the bytes by field before redesigning a
+format.**
+
+This played out as the accounting predicted: fixing what went *into* that one field cut
+the output 12× with the schema untouched. A format redesign would have been a large
+change chasing the remaining ~65 MB.
+
+### Measure the whole program, not the stages you named
+
+The stage table *used to* stop at the `BuildStep` tree, because that is where the
+library's parsing ends. The actual CLI then hands that tree to a reporter, and that
+turned out to be where most of the memory goes:
+
+| | benchmark peak | real `parse --reporter json` |
+|---|---|---|
+| flagged-10x-fleet (265 MB) | 899 MB | **3116 MB** |
+| baseline-noflags (167 MB) | ~900 MB | **5859 MB** |
+
+The cause was `Notice.detail`, which was handed the entire text of its log section. In
+memory that is nearly free — the details are COW references to ~7 MB of distinct
+buffers, and a forced-copy check prices materialising them at **+980 MB**. Nothing in
+the parsing pipeline pays that. `JSONEncoder` does, once per notice, which is how
+1,858 MB of logical `detail` (deduping to 6.7 MB) came out of a 14 MB input.
+
+This is fixed: each notice now carries its own diagnostic, sliced out of the section
+text by the per-location lookup that Swift issues already used. Output dropped 12×
+(2076 → 167 MB), peak RSS 6× (5857 → 966 MB) and wall time 4.8× (7.55 → 1.58 s). The
+figures in the table above are the *pre-fix* measurements, kept because the lesson is
+about the measurement gap, not the bug.
+
+A full round of memory work happened against this harness without anyone noticing a
+400× amplification sitting one stage past its last measurement. Two lessons:
+
+- **A stage that is not in the table is assumed free, and that assumption is never
+  stated.** Before trusting a peak figure, check it against `/usr/bin/time -l` on the
+  real command. A large gap means the harness is measuring a subset.
+- **COW sharing hides costs until something serialises.** "Cheap in memory" and "cheap
+  to output" are different questions. Any measurement taken before encoding cannot
+  answer the second one.
+
+There is now an `Encode JSON` stage running the reporter the CLI defaults to, so the
+harness sees the whole command. It dominates both tables — on baseline-noflags,
+**90% of the time and +4075 MB of the footprint** — which is correct, not a bug, but
+it changes what two figures mean:
+
+- **`PEAK` is no longer comparable to figures recorded before the stage existed.** It
+  now includes the encoded report, so the same code that reported 899 MB reports
+  ~2824 MB. When comparing against an older number, compare `Parse BuildStep tree`
+  instead, which still means what it always did.
+- **The report is encoded to memory, not to disk.** Writing 1–2 GB per iteration would
+  make the benchmark I/O-bound and measure the filesystem. It is also retained on
+  purpose: its size is the thing being reported, so `/dev/null` would hide it.
+
+#### A gigabyte-scale stage exposed a bug in the memory gate
+
+`memoryIsMeaningful` guarded against a warmup growing the heap, but not against an
+*earlier log in the same process* doing it. The per-log baseline is taken fresh, while
+the heap it is measured against is still at the previous log's high-water mark — and
+`phys_footprint` never comes back down. That error had always been there; it was small
+enough to look like noise until a stage started allocating gigabytes, at which point
+the second log of a two-log run printed **−926.5 MB**, where measured alone it reports
+**+1931.8 MB**. A negative footprint is what finally made it visible. Memory is now
+only reported for the first log of a process.
 
 ### Two probes that produced confident wrong answers
 

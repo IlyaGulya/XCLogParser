@@ -141,6 +141,8 @@ extension ParserTests {
         ("testGetIndividualSteps", testGetIndividualSteps),
         ("testGetTargetFromCommandWithReversedMarkersDoesNotCrash",
          testGetTargetFromCommandWithReversedMarkersDoesNotCrash),
+        ("testNoticeDetailIsNarrowedToItsOwnDiagnostic", testNoticeDetailIsNarrowedToItsOwnDiagnostic),
+        ("testNoticeWithoutLocationKeepsWholeSectionText", testNoticeWithoutLocationKeepsWholeSectionText),
         ("testParseAppCompilationTimes", testParseAppCompilationTimes),
         ("testParseAppNoopCompilationTimes", testParseAppNoopCompilationTimes),
         ("testParseInterfaceBuilderWarning", testParseInterfaceBuilderWarning),
