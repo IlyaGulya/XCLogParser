@@ -69,6 +69,16 @@ extension Lexer {
                                    payload: Range<Int>,
                                    redacted: Bool,
                                    withoutBuildSpecificInformation: Bool) -> Token? {
+        // The whole point of `LazyString`: skip the string entirely and carry the range. Only when the
+        // log is retained (`tokenize(data:)`) and neither rewriting flag is on, since both change the
+        // bytes and a range into the original would no longer describe the result.
+        if let logBytes = logBytes, !redacted, !withoutBuildSpecificInformation {
+            guard let range = scanStringRange(length: payload, scanner: scanner) else {
+                print("error parsing string")
+                return nil
+            }
+            return .string(LazyString(bytes: logBytes, range: range))
+        }
         guard let content = scanString(length: payload,
                                        scanner: scanner,
                                        redacted: redacted,
@@ -76,7 +86,17 @@ extension Lexer {
                                         print("error parsing string")
                                         return nil
         }
-        return .string(content)
+        return .string(LazyString(content))
+    }
+
+    /// Consumes a length-prefixed string like `scanString`, but returns the byte range instead of
+    /// decoding it.
+    func scanStringRange(length: Range<Int>, scanner: Scanner) -> Range<Int>? {
+        guard let parsed = scanner.unsignedInteger(in: length), let value = Int(exactly: parsed),
+              let range = scanner.skip(count: value) else {
+            return nil
+        }
+        return range
     }
 
     func handleJSONTokenTypeCase(scanner: Scanner,

@@ -589,7 +589,7 @@ class ActivityParserTests: XCTestCase {
     func testParseActivityLogInURLPreservesUTF8ByteLengthStringsAndEmbeddedNullBytes() throws {
         let title = "➜ Sources/Bundle+Locali🙂\u{0}zation"
         var sectionTokens = IDEActivityLogSectionTokensWithoutAttachments
-        sectionTokens[2] = Token.string(title)
+        sectionTokens[2] = Token.string(LazyString(title))
         let tokens = [
             Token.int(10),
             Token.className("IDECommandLineBuildLog"),
@@ -764,7 +764,7 @@ class ActivityParserTests: XCTestCase {
                 )
                 contents += "\(index + 1)@"
             case .string(let value):
-                contents += "\(value.utf8.count)\"\(value)"
+                contents += "\(value.value.utf8.count)\"\(value.value)"
             case .double(let value):
                 contents += "\(String(value.bitPattern.byteSwapped, radix: 16))^"
             case .null:

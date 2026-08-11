@@ -38,7 +38,42 @@ public class IDEActivityLogSection: Encodable {
     public let timeStartedRecording: Double
     public var timeStoppedRecording: Double
     public var subSections: [IDEActivityLogSection]
-    public let text: String
+
+    /// How this section's `text` is stored: either the string itself, or a range into the log that
+    /// becomes one on first read. See `LogBytes` for why the range case exists.
+    ///
+    /// Deliberately not `LazyString`, which encodes the same idea one layer down, and whose cases
+    /// carry the same names for the same reason. Two differences keep them apart: this one applies
+    /// `trimmedIfNeeded()` when it decodes, and this one memoises - it can, being stored in a class,
+    /// where `LazyString` lives in a `Token` value and would lose any cache on the next copy.
+    private enum TextStorage {
+        case materialized(String)
+        case deferred(LogBytes, Range<Int>)
+    }
+
+    private var textStorage: TextStorage
+
+    /// The section's text.
+    ///
+    /// Materialised on first read and cached, so the several readers in `Notice.parseFromLogSection`
+    /// pay for one `String` between them rather than one each. A section whose `messages` is empty
+    /// returns from that function before any of them run, and then this never builds anything.
+    ///
+    /// That cache makes the first read a mutation, so concurrent first reads of the same section
+    /// race - this was a `let` before. Parsing is single-threaded (see `ActivityParser`) and nothing
+    /// in the package reads a section from more than one thread, but a consumer holding a parsed log
+    /// and fanning out over its sections needs to touch `text` once first, or synchronise.
+    public var text: String {
+        switch textStorage {
+        case .materialized(let text):
+            return text
+        case .deferred(let bytes, let range):
+            let text = bytes.string(in: range).trimmedIfNeeded()
+            textStorage = .materialized(text)
+            return text
+        }
+    }
+
     public let messages: [IDEActivityLogMessage]
     public let wasCancelled: Bool
     public let isQuiet: Bool
@@ -72,6 +107,7 @@ public class IDEActivityLogSection: Encodable {
                 xcbuildSignature: String,
                 attachments: [IDEActivityLogSectionAttachment],
                 unknown: Int) {
+        self.textStorage = .materialized(text)
         self.sectionType = sectionType
         self.domainType = domainType
         self.title = title
@@ -79,7 +115,6 @@ public class IDEActivityLogSection: Encodable {
         self.timeStartedRecording = timeStartedRecording
         self.timeStoppedRecording = timeStoppedRecording
         self.subSections = subSections
-        self.text = text
         self.messages = messages
         self.wasCancelled = wasCancelled
         self.isQuiet = isQuiet
@@ -92,6 +127,106 @@ public class IDEActivityLogSection: Encodable {
         self.xcbuildSignature = xcbuildSignature
         self.attachments = attachments
         self.unknown = unknown
+    }
+
+    /// A section's text as the parser has it: already decoded, or still a range into the log.
+    ///
+    /// Exists so the parser has one initializer to call instead of two that differ in a single
+    /// argument. The alternative - passing both a `String` and an optional range, one of them a
+    /// placeholder - puts the "exactly one of these is real" invariant in the caller, where nothing
+    /// checks it.
+    enum SectionText {
+        case decoded(String)
+        case range(Range<Int>, logBytes: LogBytes)
+    }
+
+    /// Builds a section whose `text` may be a range into the log, decoded only if something reads it.
+    ///
+    /// The parser's entry point. In the `range` case `logBytes` is retained for as long as this section
+    /// lives. Delegates to the designated initializer above - which every subclass also calls, so it
+    /// must stay designated - and then swaps the storage for the deferred form.
+    convenience init(sectionType: Int8,
+                     domainType: String,
+                     title: String,
+                     signature: String,
+                     timeStartedRecording: Double,
+                     timeStoppedRecording: Double,
+                     subSections: [IDEActivityLogSection],
+                     sectionText: SectionText,
+                     messages: [IDEActivityLogMessage],
+                     wasCancelled: Bool,
+                     isQuiet: Bool,
+                     wasFetchedFromCache: Bool,
+                     subtitle: String,
+                     location: DVTDocumentLocation,
+                     commandDetailDesc: String,
+                     uniqueIdentifier: String,
+                     localizedResultString: String,
+                     xcbuildSignature: String,
+                     attachments: [IDEActivityLogSectionAttachment],
+                     unknown: Int) {
+        // The designated initializer takes a `String`, so the deferred case passes an empty one and
+        // replaces the storage below. That placeholder never escapes this initializer.
+        self.init(sectionType: sectionType,
+                  domainType: domainType,
+                  title: title,
+                  signature: signature,
+                  timeStartedRecording: timeStartedRecording,
+                  timeStoppedRecording: timeStoppedRecording,
+                  subSections: subSections,
+                  text: {
+                      if case .decoded(let text) = sectionText { return text }
+                      return ""
+                  }(),
+                  messages: messages,
+                  wasCancelled: wasCancelled,
+                  isQuiet: isQuiet,
+                  wasFetchedFromCache: wasFetchedFromCache,
+                  subtitle: subtitle,
+                  location: location,
+                  commandDetailDesc: commandDetailDesc,
+                  uniqueIdentifier: uniqueIdentifier,
+                  localizedResultString: localizedResultString,
+                  xcbuildSignature: xcbuildSignature,
+                  attachments: attachments,
+                  unknown: unknown)
+        if case .range(let range, let logBytes) = sectionText {
+            textStorage = .deferred(logBytes, range)
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sectionType, domainType, title, signature, timeStartedRecording, timeStoppedRecording
+        case subSections, text, messages, wasCancelled, isQuiet, wasFetchedFromCache, subtitle
+        case location, commandDetailDesc, uniqueIdentifier, localizedResultString, xcbuildSignature
+        case attachments, unknown
+    }
+
+    /// Written out by hand because `text` is now computed over `textStorage`, which the synthesised
+    /// conformance would have tried to encode instead. The encoded shape is unchanged: same keys, and
+    /// `text` still holds the section's text - reading it here materialises it, as any reader does.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sectionType, forKey: .sectionType)
+        try container.encode(domainType, forKey: .domainType)
+        try container.encode(title, forKey: .title)
+        try container.encode(signature, forKey: .signature)
+        try container.encode(timeStartedRecording, forKey: .timeStartedRecording)
+        try container.encode(timeStoppedRecording, forKey: .timeStoppedRecording)
+        try container.encode(subSections, forKey: .subSections)
+        try container.encode(text, forKey: .text)
+        try container.encode(messages, forKey: .messages)
+        try container.encode(wasCancelled, forKey: .wasCancelled)
+        try container.encode(isQuiet, forKey: .isQuiet)
+        try container.encode(wasFetchedFromCache, forKey: .wasFetchedFromCache)
+        try container.encode(subtitle, forKey: .subtitle)
+        try container.encode(location, forKey: .location)
+        try container.encode(commandDetailDesc, forKey: .commandDetailDesc)
+        try container.encode(uniqueIdentifier, forKey: .uniqueIdentifier)
+        try container.encode(localizedResultString, forKey: .localizedResultString)
+        try container.encode(xcbuildSignature, forKey: .xcbuildSignature)
+        try container.encode(attachments, forKey: .attachments)
+        try container.encode(unknown, forKey: .unknown)
     }
 
 }
