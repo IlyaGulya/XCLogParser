@@ -354,6 +354,52 @@ string the caller already holds alive — dead code worth deleting, but never th
 265 MB it looked like. Report memory in absolute units for the same reason time
 shares are misleading: a change to the total moves every other stage's share.
 
+### When peak RSS *is* the right metric
+
+The section above says peak RSS cannot resolve a 35 MB change, and it cannot — on
+a *stage inside* the process, where the noise is ±170 MB. But two reporter-side
+changes were measured only by peak RSS, because `phys_footprint` structurally
+could not see them:
+
+- replacing GzipSwift's incremental inflate held two buffers alive briefly. The
+  bench harness reported peak **unchanged** at 900.7 MB; `/usr/bin/time -l` showed
+  **+234 MB**. The memory was freed before the stage ended, so a stage-boundary
+  footprint reading missed it entirely.
+- writing the report into `[UInt8]` instead of `JSONEncoder`'s buffer regressed
+  peak by **18.7 MB**, reproducible to the byte across five runs
+  (1003.0 → 1021.8 MB).
+
+Two conditions make peak RSS trustworthy here, and both have to hold. First, the
+process must do one job and exit — no `-n 3` loop, so there is no cumulative
+high-water mark and no median-of-three artifact. Second, the change has to be in
+allocation *shape* rather than a transient: the 18.7 MB above repeated to the byte
+because the buffer's growth curve is deterministic.
+
+The rule that follows: the bench harness does not cover the reporter, so **any
+change to how the report is built or handed over must be measured with
+`/usr/bin/time -l` on the real CLI**, and a harness reading of "unchanged" is not
+evidence.
+
+### A growable buffer's overshoot is a real memory cost
+
+The 18.7 MB regression above was diagnosed wrong twice before being measured.
+
+The first hypothesis was `Data(bytes)` copying the whole 170 MB report. Plausible,
+and it was the actual cause of the gunzip regression — but removing the copy moved
+peak RSS by **0 MB**. The real cause was that `[UInt8]` grows geometrically: at
+180 MB the last doubling reserves 272 MB, overshooting by ~92 MB.
+
+Two things made this hard to see. `JSONEncoder` overshoots too, so the visible
+delta was 18.7 MB rather than 92 MB — the two allocators just land on different
+boundaries, and comparing against the *data size* rather than against the previous
+allocator's overshoot suggests nothing is wrong. And `--reporter summaryJson`,
+which does not touch the new code at all, showed +5.8 MB, which is what proved the
+delta was not all in the reporter.
+
+If output size is knowable before writing, reserve it: here the step count times a
+measured bytes-per-step (both benchmark logs are just under 2.4 KB/step) removed
+the regression outright.
+
 ## Duplicate values in the output are not duplicated memory
 
 Counting repeated values in the parsed JSON is an easy way to find apparent waste,
@@ -589,6 +635,39 @@ That divergence is shipped deliberately, and it is small but not zero: 24 of
 timestamps with 4 decimal places, so such ties are common rather than
 theoretical — reasoning that they would be rare was wrong, and only the
 whole-log diff showed it.
+
+### Replacing `JSONEncoder`: read its behaviour off the binary, not off the spec
+
+Writing the build-step report directly instead of through `Encodable` cut runtime
+roughly in half. The encoding itself was straightforward; matching Foundation
+exactly was not, and three of its choices are not what the spec or intuition
+suggests. Each was found by encoding samples with `JSONEncoder` and dumping bytes:
+
+- **`nil` optionals produce no key at all**, not `null`. A synthesized
+  `encode(to:)` calls `encodeIfPresent`, so a step with no warnings has no
+  `warnings` key in today's output. Writing `null` instead adds a key to nearly
+  every step — a schema change, found by diffing key *sets* against `JSONEncoder`
+  rather than comparing rendered output.
+- **`/` is escaped as `\/`.** RFC 8259 makes this optional and most encoders skip
+  it; Foundation does it. A build log is almost entirely paths, so getting this
+  wrong changes nearly every string in the report.
+- **Integral doubles lose their `.0`.** Foundation prints `3` where Swift's
+  `description` gives `3.0`. The exact rule — `description` with a trailing `.0`
+  stripped — held for all 400,000 values tested (a xorshift bit-pattern sweep plus
+  edge cases), but it had to be established by sweep, not assumed. It is not an
+  edge case: `compilationDuration` is integral on every non-compilation step.
+
+The check that caught the first of these is worth reusing: parse both outputs and
+diff the recursive set of key paths, so a missing or extra field anywhere in the
+tree fails regardless of ordering or value formatting. Value equality alone would
+not have caught it, because a missing key and a `null` key both read as "no
+warnings" to a consumer.
+
+One further note: `JSONEncoder` emits keys in hash-table order, which **varies
+between processes**. So there was no byte-exact baseline to diff against before
+this change, only a structural one — and fixing key order to declaration order
+made the report byte-reproducible for the first time, which is a better
+regression check than the structural diff it replaces.
 
 ### Diff whole-log output, and ignore key order
 

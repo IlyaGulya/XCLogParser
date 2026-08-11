@@ -26,7 +26,18 @@ public struct JsonReporter: LogReporter {
     public func report(build: Any, output: ReporterOutput, rootOutput: String) throws {
         switch build {
         case let steps as BuildStep:
-            try report(encodable: steps, output: output)
+            // The build-step tree is the large report - 96-166 MB, tens of thousands of steps - and
+            // the only one where encoding dominates the runtime, so it is written directly rather
+            // than through `JSONEncoder`. See `JSONWriter`. The two cases below are small and keep
+            // using `Encodable`.
+            // Sizing the buffer up front rather than letting `[UInt8]` find the size by doubling:
+            // at report scale the last doubling overshoots by up to ~92 MB, which measured as
+            // +18.7 MB peak RSS against `JSONEncoder`. Both benchmark logs come out just under
+            // 2.4 KB per step (2438 and 2356), so 2.5 KB covers them without much slack. It is only
+            // a hint - a wider report just grows the array as before.
+            var writer = JSONWriter(reservingCapacity: steps.stepCount() * 2560)
+            steps.write(to: &writer)
+            try output.write(report: writer.makeData())
         case let logEntries as [LogManifestEntry]:
             try report(encodable: logEntries, output: output)
         case let activityLog as IDEActivityLog:
