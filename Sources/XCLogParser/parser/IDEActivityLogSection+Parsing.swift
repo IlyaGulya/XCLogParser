@@ -24,8 +24,12 @@ extension IDEActivityLogSection {
     /// Returns the name of the target inside the `commandDetailDesc`
     /// - returns: The name of the target or nil if there is no target name in `commandDetailDesc`
     func getTargetFromCommand() -> String? {
+        // The markers can appear out of order - e.g. "' from project 'in target 'App" - and slicing with
+        // the resulting reversed range traps. Returning nil means the same thing as "no target found" to
+        // every caller here.
         guard let startIndex = commandDetailDesc.range(of: "in target '"),
-            let endIndex = commandDetailDesc.range(of: "' from project '") else {
+            let endIndex = commandDetailDesc.range(of: "' from project '"),
+            startIndex.upperBound <= endIndex.lowerBound else {
                 return nil
         }
         return String(commandDetailDesc[startIndex.upperBound..<endIndex.lowerBound])
@@ -97,12 +101,12 @@ extension IDEActivityLogSection {
         var usedParentCommandDesc = false
         var matches = regexp.matches(in: commandDetailDesc,
                               options: .reportProgress,
-                              range: NSRange(location: 0, length: commandDetailDesc.count))
+                              range: NSRange(location: 0, length: commandDetailDesc.utf16.count))
         // If the list of compiled Swift Files are not in the commandDetailDesc, we check the parent's
         if matches.isEmpty {
             matches = regexp.matches(in: parentCommandDetailDesc,
                                      options: .reportProgress,
-                                     range: NSRange(location: 0, length: parentCommandDetailDesc.count))
+                                     range: NSRange(location: 0, length: parentCommandDetailDesc.utf16.count))
             usedParentCommandDesc = true
         }
         let desc = usedParentCommandDesc ? parentCommandDetailDesc : commandDetailDesc
