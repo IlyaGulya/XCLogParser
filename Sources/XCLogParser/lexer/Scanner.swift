@@ -69,25 +69,22 @@ final class Scanner {
         return true
     }
 
-    func scanCharacters(from allowedCharacters: Set<Character>) -> String? {
-        let allowedBytes = Set(
-            allowedCharacters.compactMap { character -> UInt8? in
-                let characterBytes = Array(String(character).utf8)
-                return characterBytes.count == 1 ? characterBytes[0] : nil
-            }
-        )
-        var prefix: [UInt8] = []
+    /// Scans while the current byte is in `allowedBytes`.
+    /// - parameter allowedBytes: The single-byte characters to accept. Callers are expected to build
+    /// this set once and reuse it; converting a `Set<Character>` here would reallocate it on every call,
+    /// and this is the hottest path in the lexer.
+    func scanCharacters(from allowedBytes: Set<UInt8>) -> String? {
+        let startOffset = offset
 
         while !isAtEnd {
             guard allowedBytes.contains(bytes[offset]) else {
                 break
             }
 
-            prefix.append(bytes[offset])
             self.offset += 1
         }
 
-        return String(bytes: prefix, encoding: .utf8)
+        return String(bytes: bytes[startOffset..<offset], encoding: .utf8)
     }
 
     func moveOffset(by value: Int) {
