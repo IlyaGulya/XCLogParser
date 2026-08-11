@@ -170,7 +170,7 @@ public struct BuildStep: Encodable {
     public let buildIdentifier: String
 
     /// The identifier of the step
-    public let identifier: String
+    public var identifier: String
 
     /// The identifier of the parent step
     public let parentIdentifier: String
@@ -182,11 +182,11 @@ public struct BuildStep: Encodable {
 
     /// The title of the Step <br>
     /// In steps of type BuildStepType.detail this contains the file that was compiled
-    public let title: String
+    public var title: String
 
     /// The signature of the Step. This may contain more detail than the Title
     /// In steps of type BuildStepType.detail this contains more information about the compilation
-    public let signature: String
+    public var signature: String
 
     /// The start date of the step represented in the format ISO8601
     public let startDate: String
@@ -238,7 +238,7 @@ public struct BuildStep: Encodable {
     public let architecture: String
 
     /// URL of the document in a build of type `.detail`
-    public let documentURL: String
+    public var documentURL: String
 
     /// The warnings found in this step
     public let warnings: [Notice]?
