@@ -21,8 +21,16 @@ import Foundation
 
 final class Scanner {
 
-    let string: String
-    private let bytes: [UInt8]
+    /// The input, borrowed rather than owned.
+    ///
+    /// A pointer, not an `[UInt8]`, so that the caller can keep the log in whatever it already has -
+    /// in practice the `Data` returned by gunzip. Copying that into an `Array` cost a full extra copy
+    /// of the log (+297 MB on a 265 MB log, measured per stage) purely to satisfy this type.
+    ///
+    /// The scanner therefore does NOT keep the input alive. Every instance must live inside the
+    /// `withUnsafeBytes` closure that produced the pointer; `Lexer.tokenize` is the only thing that
+    /// creates one on a real log, and it does exactly that.
+    private let bytes: UnsafeRawBufferPointer
 
     private(set) var offset: Int
 
@@ -39,10 +47,23 @@ final class Scanner {
         offset >= bytes.count
     }
 
-    init(string: String) {
-        self.string = string
-        self.bytes = Array(string.utf8)
+    /// Scans `bytes` in place, without copying or retaining them.
+    ///
+    /// - important: `bytes` must remain valid for the whole lifetime of this scanner. See the note on
+    /// the `bytes` property.
+    init(bytes: UnsafeRawBufferPointer) {
+        self.bytes = bytes
         self.offset = 0
+    }
+
+    /// Runs `body` with a scanner over the UTF-8 bytes of `string`.
+    ///
+    /// For tests and other callers that have a `String` literal rather than a log. Takes a closure
+    /// because the scanner may not outlive the buffer it borrows, which a plain initializer could not
+    /// enforce.
+    static func withScanner<T>(string: String, _ body: (Scanner) throws -> T) rethrows -> T {
+        let bytes = Array(string.utf8)
+        return try bytes.withUnsafeBytes { try body(Scanner(bytes: $0)) }
     }
 
     func scan(count: Int) -> String? {
