@@ -1,0 +1,66 @@
+# Models the 14 MB log used as the benchmark baseline: a large app target where most compile
+# steps are clean and diagnostics cluster in a few files.
+#
+# Every field here is set from a measurement, not chosen for looks. See README.md in this
+# directory for which benchmark each one feeds.
+
+sectionCount: 53717
+
+# 6.8% of sections held a diagnostic. The largest single win measured came from not splitting
+# the text of the other 93.2%, so this figure decides whether that work is visible at all.
+diagnosticDensity: 0.068
+
+# Sized so the total lands near the 265 MB of section text the real log carried. That total is
+# what `parseAsString` and the token strings actually work over, so it matters more than the
+# compressed file size.
+sectionTextBytes:
+  min: 600
+  max: 9700
+
+# Long tailed on purpose. Most sections with diagnostics have a couple; a handful carry
+# hundreds, and those deep ones are what made notice parsing and detail sharing expensive.
+noticesPerSection:
+  buckets:
+    - count: 1
+      weight: 620
+    - count: 2
+      weight: 210
+    - count: 4
+      weight: 90
+    - count: 9
+      weight: 40
+    - count: 27
+      weight: 14
+    - count: 80
+      weight: 5
+    - count: 300
+      weight: 1.5
+    - count: 909
+      weight: 0.4
+
+# 78% of notice details were copy-on-write references to a shared buffer, so only about a fifth
+# of notices carry their own string.
+detailVariety: 0.22
+
+# Both diagnostic markers start with ":", and the notice fast path is gated on how often that
+# byte occurs. Measured at 0.78% of log bytes.
+colonByteFrequency: 0.0078
+
+# Fraction of leaf sections that are C/ObjC rather than Swift. These are the ones carrying
+# `[-Wflag]` markers, and finding those is a regex scan over the whole section text -
+# `Notice.parseClangWarningFlags` was 5.12% of parse samples. A log made only of Swift
+# compilations never runs that code, so work done there looks free.
+clangSectionShare: 0.25
+
+# Real builds have many targets. `groupedByTarget()` reads the target out of each section's
+# command and rebuilds the tree around it; with one target that collapses to a single group.
+targetCount: 24
+
+# Xcode nests sections rather than hanging every step off the root, and the parser walks them
+# recursively while carrying parent state down.
+nestingDepth: 2
+
+# Some diagnostics are errors, which take a different path than warnings.
+errorShare: 0.03
+
+seed: 20260805

@@ -1,0 +1,1336 @@
+# Benchmarking and profiling XCLogParser
+
+Tooling for measuring where time goes when parsing an `.xcactivitylog`.
+
+## Running the benchmark
+
+```bash
+swift build -c release --product xclogparser-bench
+./.build/release/xclogparser-bench -n 5 --warmup 1 --json Benchmarks/Results/latest.json
+```
+
+With no arguments it benchmarks every `.xcactivitylog` in `Benchmarks/Logs`
+(gitignored — drop your own logs there). Pass paths explicitly to override.
+
+| Flag | Meaning |
+| --- | --- |
+| `-n`, `--iterations` | Measured iterations per log (default 3) |
+| `--warmup` | Unmeasured warmup iterations (default 1) |
+| `--redacted` | Redact the user directory while lexing |
+| `--without-build-specific-information` | Strip build-specific information while lexing |
+| `--json <path>` | Also write results as JSON |
+| `--baseline <path>` | Diff this run against a previous `--json` file — see ["Comparing two runs"](#comparing-two-runs) |
+| `--encode-path <p>` | Which encode path to measure: `both` (default), `buffered`, `streaming`. Only the encode stage that runs first in a process has a falsifiable footprint — see ["A footprint delta measured second is not falsifiable"](#a-footprint-delta-measured-second-is-not-falsifiable). `both` still times both, but prints no footprint for the second. |
+
+The tool times each pipeline stage separately — read, gunzip, UTF-8 decode,
+`Lexer.tokenize`, `ActivityParser`, `ParserBuildSteps` — and reports
+p0/p50/p90/p99/p100 and stddev, each stage's share, allocation and
+retain/release counts, peak RSS and throughput. Timings use the monotonic clock
+(`DispatchTime.uptimeNanoseconds`).
+
+Percentiles are nearest-rank on the sorted samples, with no interpolation and no
+histogram: with 3–10 samples per stage, interpolating would invent a duration no
+iteration actually took. The consequence is that the high percentiles collapse
+onto the slowest sample — with 5 samples, p90, p99 and p100 are the same number.
+The report says which percentiles the sample size can resolve rather than
+letting three identical columns read as a converged distribution.
+
+### Comparing two runs
+
+```bash
+# before
+git checkout <baseline-commit>
+swift build -c release --product xclogparser-bench
+./.build/release/xclogparser-bench "$PWD/Benchmarks/Logs/your.xcactivitylog" \
+  -n 5 --json /tmp/before.json
+
+# after
+git checkout <your-branch>
+swift build -c release --product xclogparser-bench
+./.build/release/xclogparser-bench "$PWD/Benchmarks/Logs/your.xcactivitylog" \
+  -n 5 --baseline /tmp/before.json
+```
+
+Regressions and improvements are printed as two separate lists, not netted into
+one signed total — a win in one stage must not be able to mask a regression in
+another. Logs are matched by name, so reordering them cannot compare one log's
+figures against another's, and anything that could not be compared is listed
+explicitly: a comparison covering three of seven stages otherwise prints the
+same verdict as one covering all seven.
+
+The two metric families take different thresholds, and the split is the point:
+
+| Metric | Threshold | Why |
+| --- | --- | --- |
+| time, throughput | ±5% **and** ±1 ms, at p50 and p90 | Both must be exceeded. Relative alone flags a 6% swing on a 0.4 ms stage nobody can act on; absolute alone flags 20 ms on a 4 s stage that is inside this host's noise. |
+| allocations, retains, releases | exact — any change at all | "Allocations did not grow by even one" is a statement about identity, not magnitude, and no percentage expresses it. |
+
+Counters can be held to an exact threshold because they are deterministic where
+the timings are not: two runs 26% apart in wall time reported byte-identical
+counts. **A counter verdict is a statement about the code; a timing verdict is
+partly a statement about the host.** On a loaded machine the counter half of
+this diff is still worth reading and the timing half is not.
+
+#### Pass the same *kind* of path to both runs
+
+Use an absolute path, and the same form on both sides. A relative path costs
+**20 extra allocations** in the `read` stage (27 against 7), deterministically,
+because `Data(contentsOf:)` resolves a relative `URL` against the current
+directory and that resolution allocates.
+
+This is small, but it is in the first stage and it is exactly the shape of a
+real finding: stable across processes, reproducible, and attributable to a named
+stage. Passing an absolute path to the baseline run and a relative one to the
+comparison run produced a confident three-line `read` regression — `+285.7%`
+allocations, `+550.0%` retains — that was entirely an artifact of the invocation.
+The counters are exact enough to resolve the benchmark's own arguments, so
+anything not held identical between the two runs shows up as a library change.
+
+### The report names the paths your log never exercised
+
+Two parser paths run only on logs that meet a condition:
+
+| function | needs |
+| --- | --- |
+| `assignNoticesFrom` | a whole-module build |
+| `addSwiftcTimesSteps` | `-Xfrontend -debug-time-function-bodies` or `-debug-time-expression-type-checking` |
+
+Every run ends by naming the ones that did not run. This is not a nicety: **a
+whole-log diff over a change to an unexecuted path reports "identical", and
+identical reads as verified.** That is a false negative dressed as a pass, and it
+is the same class of problem as a footprint that cannot be falsified — so it gets
+the same treatment the rest of the harness gives that class, named in the output
+rather than omitted from it.
+
+The check evaluates the library's own gates through public API and log content;
+it does not instrument the library, and it runs outside the timed stages so that
+re-walking the section tree is not charged to the parser.
+
+Worth knowing what this immediately corrected: the 14 MB baseline log **does**
+exercise `assignNoticesFrom` — 53,717 `Compile <file>.swift` steps in its output,
+each one synthesized by that path — and only `addSwiftcTimesSteps` is missing.
+The assumption going in was that neither log covered either path. Coverage is a
+property of the log, and guessing at it from the project's shape was wrong.
+
+### Figures are comparable within a platform, not across
+
+The harness runs on Linux as well as macOS, and reports the same three metrics on
+both. Those metrics do **not** convert between the two. Measured on one generated
+294 MB log, same bytes on both hosts (`sha256` verified), so nothing about the
+input differs:
+
+| stage | macOS p50 | Linux p50 | macOS allocations | Linux allocations |
+|---|---|---|---|---|
+| Read file | 1.4 ms | 9.6 ms | 7 | 7 |
+| Gunzip | 49.2 ms | 652.9 ms | 1 | 1 |
+| Tokenize (Lexer) | 79.5 ms | 276.7 ms | **433,621** | **433,621** |
+| Parse IDEActivityLog | 88.1 ms | **18.805 s** | 420,745 | 704,014 |
+| Parse BuildStep tree | 617.0 ms | 1.822 s | 993,322 | 2,096,980 |
+| Encode JSON (buffered) | 207.4 ms | 775.1 ms | 4 | 4 |
+| TOTAL | 1.229 s | 22.861 s | 1,847,797 | 3,234,724 |
+
+Hardware differs (10-core Apple silicon against 4 Xeon cores in a container), so
+a flat 3-4x on most stages is expected and uninteresting. Two things in this table
+are not about hardware:
+
+**`Tokenize` matches bit-for-bit.** It is pure Swift with no Foundation on its
+path, and 433,621 on both platforms is the evidence that the Linux counters count
+correctly rather than approximately. Where the numbers diverge, the divergence is
+real and not an artefact of the measurement.
+
+**The stages that diverge are the Foundation-heavy ones**, by +67% and +111%.
+Linux resolves Foundation through swift-foundation and Darwin through
+ObjC-Foundation; these are different implementations, so they allocate different
+amounts for the same call. Comparing a Linux count against a macOS count measures
+the two standard libraries, not the change under test.
+
+**`Parse IDEActivityLog` is 7% of the run on macOS and 82% on Linux** — 213x
+slower in absolute terms where neighbouring stages are 3x. That size of gap is not
+hardware and not a measurement artefact; it is a property of the Linux Foundation
+path through that stage, and it makes the stage worth profiling on Linux in its
+own right.
+
+What follows from this: use a baseline recorded on the same platform, and never
+quote a figure from one platform in a comparison against the other. The report
+names its footprint source (`phys_footprint` on Darwin, `RssAnon` on Linux) for
+the same reason.
+
+## Measure on an idle machine
+
+This is not optional. Benchmarking under load produced a *3x slowdown* and a
+15s standard deviation, which read as a code regression but was a loaded host
+(load average 72, from unrelated JVM and container processes).
+
+```bash
+sysctl -n vm.loadavg     # want the 1-minute figure low, ~1-2
+```
+
+On a quiet host the same benchmark has a stddev under ~1% of the median. If
+stddev exceeds a few percent, or peak RSS shifts a lot between runs, discard
+the numbers — do not interpret them.
+
+A second occasion made the point again, with numbers worth keeping for calibration.
+The same commit and the same log, measured on a loaded workstation and then on an
+idle 12-core host:
+
+| | loaded (load avg ~190) | idle (load avg 1.7) |
+|---|---|---|
+| total | 1.3–3.4 s | **643.7 ms** |
+| stddev | 820 ms | **8.9 ms** |
+| agreement across 3 process runs | none | within 13 ms |
+
+Nothing about the binary changed. The loaded host cannot answer a timing question at
+all — not "roughly", not "as a lower bound". Memory figures are unaffected, since
+`phys_footprint` does not depend on scheduling, so a loaded machine is still fine for
+memory work; that is the only thing to do on it.
+
+If no idle machine is available locally, measuring over `ssh` on one is worth the
+setup: `rsync` the tree (excluding `.build`), build there, and run both the benchmark
+and `/usr/bin/time -l` on the real CLI.
+
+### Load average is not sufficient
+
+A machine can show a healthy load average and still be unusable for timing.
+Anything that hooks process execution — a security agent, a filesystem monitor —
+taxes exactly the work a parser benchmark does, while contributing little to load
+average. Seen here at 27-35% CPU on an otherwise idle host (load ~1.5): a 216 ms
+stddev on a 9.5 s total where a quiet run gives 2.8 ms, a 77x spread, and peak RSS
+inflated from 1167 MB to 1731 MB for code that only *removes* allocations. Those
+numbers look like a regression and are pure measurement artefact, so check what
+else is running before trusting a spread like that.
+
+If no clean host is available, prefer the **minimum** across many interleaved
+runs rather than the mean or median. Contention can only ever make a run
+slower, so the minimum is the robust estimator; the mean is dominated by
+whatever else the machine happened to do. Interleave variants (`A B C A B C …`)
+rather than running each variant's iterations together, so a slow patch of
+wall-clock cannot be mistaken for a property of one variant.
+
+Allocation counts (below) need none of this — they are deterministic and
+unaffected by CPU contention, which makes them the more trustworthy signal when
+a quiet machine is out of reach.
+
+## Profiling: what works and what does not
+
+**`sample` and `xctrace` are not useful here.** In a release build the lexer and
+parsers inline completely into the caller, so the entire library collapses into
+a single frame (`main.swift:127` / `main.swift:145`) and ~0 samples get
+attributed to any `XCLogParser` function. Adding `-g` does not restore
+attribution, and `-Onone` distorts the profile too much to act on.
+
+**DTrace does work, and it is the tool to reach for first.** It samples the
+stack from outside the process, so inlining does not hide anything from it —
+the same property that makes it work for allocation counts below.
+
+### Where time goes — DTrace sampling
+
+```bash
+swift build -c release --product xclogparser-bench
+
+sudo dtrace -x ustackframes=40 \
+  -n 'profile-997 /pid == $target/ { @s[ustack(40)] = count(); }' \
+  -c "./.build/release/xclogparser-bench -n 1 --warmup 0 <log>" > time.stacks
+```
+
+Aggregate by taking the innermost `xclogparser-bench` frame in each stack and
+stripping the `+0x…` offset, which gives per-function shares directly:
+
+```
+15.02%  Scanner.scanCharacters
+13.64%  ParserBuildSteps.parseLogSection
+ 5.12%  Notice.parseClangWarningFlags
+```
+
+This is what found the two largest wins in the file's history, and it also
+caught a *regression* that had been introduced by an optimization: an ASCII
+fast-path gate that scanned its whole input showed up at 14.7% of samples,
+more than twice what the fast path saved elsewhere.
+
+Same caveats as the allocation recipe: needs `sudo`, SIP must permit it, and
+`ustack()` slows the run ~20x. Shares are comparable between runs; absolute
+timings from such a run are not. `LogBenchmark.runIteration` appearing high is
+the harness itself, not the library.
+
+### Exact call counts — LLVM instrumentation
+
+```bash
+swift build -c release --product xclogparser-bench -Xswiftc -profile-generate
+
+LLVM_PROFILE_FILE=out.profraw \
+  ./.build/release/xclogparser-bench -n 1 --warmup 0 <log>
+
+X=$(dirname $(xcrun --find swift))
+$X/llvm-profdata merge -sparse out.profraw -o out.profdata
+$X/llvm-profdata show --all-functions --counts --text out.profdata
+```
+
+Output is `path:mangled_name` followed by `# Counter Values:`. Pipe the mangled
+names through `swift-demangle --compact` to read them.
+
+Overhead is small (measured 10.9s/18.4s instrumented vs 10.8s/19.0s clean), but
+these are **call counts, not time shares**. They find code that runs a huge
+number of times; take absolute timings from an ordinary release run.
+
+### Counting inputs — in-code probes
+
+DTrace sampling gives time shares and instrumentation gives call counts, but
+neither can tell you *how much data* a function was handed. A probe can, and
+that is often the actual finding — so reach for this when you need to measure
+inputs, not as a substitute for the sampler above.
+
+```swift
+enum ParseProbe {
+    nonisolated(unsafe) static var buckets = [String: Double]()
+    nonisolated(unsafe) static var counts = [String: Int]()
+
+    @inline(never)
+    static func t<T>(_ key: String, _ body: () throws -> T) rethrows -> T {
+        let start = DispatchTime.now().uptimeNanoseconds
+        defer {
+            buckets[key, default: 0] += Double(DispatchTime.now().uptimeNanoseconds - start) / 1e9
+            counts[key, default: 0] += 1
+        }
+        return try body()
+    }
+}
+```
+
+`@inline(never)` keeps the probe itself from being inlined away. Accumulate into
+a bucket per call site, print at the end, then remove the probes before
+committing.
+
+The reason to bother: summing `text.utf8.count` alongside a marker check is what
+revealed that 185MB of section text was being split while only 6.8% of sections
+contained a diagnostic. No sampler reports that, because it is a property of the
+data rather than of where cycles went.
+
+### Allocation counts — built into the benchmark
+
+For **totals per stage**, the benchmark reports them itself and no `sudo` or
+DTrace is needed. It hooks the Swift runtime's `_swift_allocObject`,
+`_swift_retain` and `_swift_release` function pointers — mutable data symbols in
+`libswiftCore`, not API, so availability is checked at runtime rather than
+assumed. When the hooks are unavailable the counts are reported as absent, never
+as zero: "cannot measure" and "allocated nothing" must not print the same.
+
+This costs **+2.65%** on a real log, which is why counts and timings come from
+one run here where DTrace forces two: `ustack()` slows the process ~20x, so no
+timing from that run means anything.
+
+Two limits, stated in the tool's own output on every run:
+
+- Only the `swift_allocObject` family is hooked, not `malloc` — ~99.3% of events
+  on these logs, so the totals read slightly low against a DTrace figure.
+- Every thread in the process is counted, not just the measured stage's own work.
+  The pipeline is single-threaded except `SwiftCompilerParser.findRawSwiftTimes`,
+  which needs swiftc timing flags and so runs on neither benchmark log.
+
+**DTrace remains the only source of per-function attribution**, which is what
+`ustack()` buys and what the recipe below is still for.
+
+#### What the counters showed about the six allocation fixes
+
+Measured with the same harness on both sides — only the library differing —
+against the 14 MB baseline log:
+
+| stage | metric | before | after | |
+| --- | --- | --- | --- | --- |
+| buildstep-parse | releases | 11,074,222 | 9,019,360 | −18.6% |
+| buildstep-parse | retains | 9,832,372 | 8,360,948 | −15.0% |
+| buildstep-parse | allocations | 759,048 | 689,227 | −9.2% |
+| activity-parse | allocations | 588,340 | 562,878 | −4.3% |
+| activity-parse | releases | 2,284,244 | 2,207,858 | −3.3% |
+| activity-parse | retains | 2,286,152 | 2,247,959 | −1.7% |
+
+Zero regressions, on an exact threshold — every one of those figures would have
+been reported had it moved by a single event.
+
+The timings on the same runs favoured after in both affected stages
+(buildstep-parse p50 347.5 → 296.2 ms, activity-parse p90 158.3 → 144.0 ms), but
+that host was at load average 10.16 on 10 cores. **Read the counter half of that
+comparison and not the timing half.** The counters are what make the improvement
+claimable at all: they are deterministic, so they say something about the code
+even from a machine too busy to time anything.
+
+#### The whole history, measured commit by commit
+
+Every library-touching commit on the first-parent mainline, counters only, same
+14 MB baseline log:
+
+| stage | first commit | HEAD | |
+| --- | --- | --- | --- |
+| tokenize | 5,500,510 | 671,735 | **−87.8%** |
+| activity-parse | 2,856,394 | 562,878 | **−80.3%** |
+| buildstep-parse | 2,743,300 | 689,277 | **−74.9%** |
+| **total allocations** | **11,100,204** | **1,923,890** | **−82.7%** |
+| total retains | 34,598,613 | 10,820,692 | −68.7% |
+| total releases | 54,560,401 | 11,227,271 | −79.4% |
+
+The largest single wins, by allocations removed:
+
+| commit | Δ allocations | |
+| --- | --- | --- |
+| `0f47b45` | −4,331,856 | per-token arrays in the lexer |
+| `89e20df` | −1,762,884 | allocation-free Prefix/Contains/Suffix matching |
+| `af42d53` | −1,632,484 | `String(describing:)` in ActivityParser dispatch |
+| `ce71018` | −1,117,136 | dates into a stack buffer |
+| `14e0a00` | −593,085 | the copy in `parseAsString` |
+| `d1a9f79` | −419,624 | the two arrays behind 86% of array growth |
+
+By retains removed the order is different — `36f3cfe` (−11,827,747), `8f8754d`
+(−4,255,756) and `89e20df` (−3,157,417) lead — which is the same point the
+["Allocation counts are not a proxy for time"](#allocation-counts-are-not-a-proxy-for-time)
+section makes about allocation share, one metric further along.
+
+#### A commit can win on time and lose on allocations, silently
+
+`62d37ba` ("Format section dates without DateFormatter") **added 1,256,211
+allocations** — the single largest regression in this history, and it went
+unnoticed for the rest of it.
+
+It was not a bad commit. It was aimed at time and it hit: DTrace put
+`NSDateFormatter` at 7.30% of all samples in a full parse, the largest single
+item inside `parseLogSection`, and the replacement took it to 0.00%. The cost was
+paid in arrays, which nothing in the toolchain measured at the time — the
+counters did not exist yet, and the DTrace allocation recipe is a separate
+20x-slower run nobody thinks to do for a date-formatting change.
+
+`ce71018` removed most of it two commits later by formatting into a stack buffer.
+But **it did not get back to where it started**:
+
+| | total allocations |
+| --- | --- |
+| `3795ed8` — before the regression | 3,204,677 |
+| `62d37ba` — the regression | 4,460,888 |
+| `ce71018` — the recovery | 3,343,761 |
+
+So ~139,000 allocations per parse of that regression are still there, and were
+carried through the next thirty commits as the new normal. Stated as a table
+because the two obvious deltas for `ce71018` differ — −1,117,136 from the commit
+before it, −1,117,127 from the regression's peak, since `e80f645` lands between
+them — and a single number here invites quoting the wrong one.
+
+This is the case for counting allocations in the same run as the timings rather
+than in a separate opt-in one. A regression this size in a metric nobody was
+looking at is not caught by discipline; it is caught by the number being on the
+screen every time.
+
+#### Two traps in measuring a history rather than a commit
+
+Both produced a wrong answer before being caught, and both will recur.
+
+**A single harness cannot span an evolving API.** The current benchmark needs
+`StreamingReporterOutput` (`b4fc4db`), `Gunzip.inflate` (`08665a7`) and
+`tokenize(data:)` (`cbf2607`); none exist in the older two thirds of this
+history, so grafting one harness across it simply fails to build. What works is a
+minimal probe using only the API present throughout — here read, tokenize,
+activity-parse, buildstep-parse, which is also where every allocation fix landed.
+The stages that probe cannot reach (encode, and the library's own `Gunzip`) then
+report *no change* for commits that in fact improved them, so the omission has to
+be stated wherever the table is read rather than inferred from a row of zeros.
+
+**A side-branch commit is not comparable to its linear neighbours.** `143ff18`
+measured **71,422,210** tokenize allocations against the mainline's 5,500,510 — a
+13x regression on a commit titled "Avoid runtime type-name construction in
+ActivityParser dispatch", which does the opposite. It sits on a branch off
+`d723980` and therefore carried that branch's older lexer along with its own
+change. Its `activity-parse` improvement was real and survived the merge; its
+`tokenize` figure was an artifact of where it sat in the graph.
+
+Use `git log --first-parent`. A merge commit is a state the mainline actually
+reached; a commit on a side branch is a state that never existed on it.
+
+### Per-function attribution — DTrace
+
+Based on the [Swift server guide on allocations][swift-allocations], with one
+correction that matters a great deal here.
+
+```bash
+swift build -c release --product xclogparser-bench
+
+sudo dtrace -n 'pid$target::swift_allocObject:entry,pid$target::swift_slowAlloc:entry,pid$target::malloc:entry,pid$target::calloc:entry,pid$target::realloc:entry,pid$target::posix_memalign:entry,pid$target::malloc_zone_malloc:entry,pid$target::malloc_zone_calloc:entry,pid$target::malloc_zone_memalign:entry { @s[ustack(40)] = count(); } ::END { printa(@s); }' \
+  -c "./.build/release/xclogparser-bench -n 1 --warmup 0 <log>" > raw.stacks
+```
+
+**The guide's recipe probes only the `malloc` family, which here sees 0.7% of
+reality.** Swift allocates class instances and array/string buffers through
+`swift_allocObject`:
+
+| probe | count |
+| --- | --- |
+| `swift_allocObject` | 10,950,109 |
+| `malloc` | 71,688 |
+| `swift_slowAlloc` | 175 |
+| `realloc` | 31 |
+
+Probing `malloc` alone blamed `Notice.parseClangWarningFlags` for 97.4% of
+allocations — a real but negligible site — and entirely hid array growth in the
+`Lexer`, which is the actual 41.7%. Always include `swift_allocObject`.
+
+Like the time profile above, this defeats release-build inlining because it
+hooks `libswiftCore` and walks the stack from outside the process. Two caveats:
+
+- `ustack()` slows the run ~20x (60.5s vs 3.4s total). Allocation **counts** from
+  such a run are valid; **timings** from it are meaningless.
+- Requires `sudo`, and SIP must permit it. If `csrutil status` reports
+  `DTrace Restrictions: enabled`, the recipe will not run.
+
+FlameGraph is optional — aggregating `raw.stacks` by counting the first
+application frame in each stack gives the same ranking.
+
+[swift-allocations]: https://www.swift.org/documentation/server/guides/allocations.html
+
+## Worked example
+
+Both committed optimizations came out of this loop:
+
+1. Instrumentation counted 51,069,072 executions of a closure inside
+   `Scanner.scanCharacters(from:)` for 14,971,475 calls — it rebuilt a
+   `Set<UInt8>` from a `Set<Character>` on every call. Hoisting it into
+   `Lexer.init` cut tokenize 4.65s → 0.79s.
+2. Counts pointed at `Notice.parseSwiftIssuesDetailsByLocation` but fixing its
+   quadratic string concat changed nothing measurable. Probes showed the real
+   cost was splitting 185MB of text in sections that held no diagnostic at all;
+   guarding on the marker cut the BuildStep stage 10.72s → 9.03s.
+
+Step 2 is the point of this document: the plausible fix suggested by call counts
+was not the fix that mattered, and only direct timing distinguished them.
+
+A third instance of the same lesson, from the allocation pass: peak RSS is 5.4x
+the input (1434MB for a 265MB log), and the obvious culprit looked like the
+163MB of section text copied into `Token` strings. Allocation counts ranked that
+at ~13%, well behind `_ArrayBuffer._consumeAndCreateNew` at 41.7% — plain array
+growth in `Lexer.tokenize` and a throwaway array returned per token. The
+cheapest fix was also the biggest, and the expensive API-breaking one ranked
+fourth. Rank by measurement, not by how obviously wrong the code looks.
+
+Two measurements that read as promising and were not, recorded so they are not
+retried:
+
+- `parseAsString` calls `trimmingCharacters` on every string, including 265MB of
+  section text. It costs **0.08s** across all 677k strings. Not a target.
+- A hand-written byte-level trim meant to avoid allocating was **20-38x slower**
+  (1.7s and 3.0s vs 0.08s), because `Substring.count` on UTF-8 walks the whole
+  string. Foundation already wins here.
+
+## Allocation counts are not a proxy for time
+
+Three fixes cut `swift_allocObject` by **70%** (10,950,087 → 3,222,863) and left
+wall clock **flat**. Tokenize did improve (0.749s → 0.547s), but the BuildStep
+stage regressed enough to cancel it.
+
+The time profile explained why, and the explanation was uncomfortable: one of the
+three fixes had introduced its own hotspot. Replacing `input.lowercased()` with
+byte comparison removed the allocations it was meant to remove, but gated the
+fast path on a scan of the entire input, which landed at **14.7% of samples** —
+more than twice the 7.4% → 2.0% it saved at the call site it targeted. Checking
+ASCII-ness inline instead, one byte at a time, took it to 0.00%.
+
+So: measure allocations to find *which* code allocates, but never report an
+allocation reduction as a speedup. They are different quantities, and here they
+moved in opposite directions.
+
+The same round rewrote the hottest function in the parse
+(`parseSwiftIssuesDetailsByLocation`, 35.0% of samples) as a single byte-wise
+pass, taking it to 3.10% while allocations barely moved (3,222,863 → 3,204,736) —
+the mirror image of the same point. What was being paid for was *passes over
+bytes*, which no allocation count shows.
+
+Both of those changes altered `String` comparison semantics, which is worth
+knowing before repeating the trick: `String.contains`/`starts(with:)` compare
+grapheme clusters, so a combining mark fused to the end of a match makes
+Foundation report no match where bytes say otherwise. Differential testing
+against the original implementation (tens of thousands of generated inputs,
+including all 112 combining marks in U+0300–U+036F) is what kept those rewrites
+honest — and it caught two real bugs that the project's own unit test, which
+asserts only a dictionary's `count`, would have passed.
+
+## Measuring memory: peak RSS cannot do it
+
+`/usr/bin/time -l`'s "maximum resident set size" is unusable for this project.
+Three runs of the *same unchanged binary* on the 265 MB log:
+
+    1769 MB    1918 MB    1750 MB
+
+That is ±10% (~170 MB) run to run with no code change, which hides every change
+worth making — the whole token array is 35 MB.
+
+It does not merely fail to resolve small changes, it reports them backwards.
+Removing a dead field that held the entire log measured RSS going **up 4%**
+(1746 → 1820 MB). Both figures were noise.
+
+`phys_footprint` (`TASK_VM_INFO`) is roughly **70× quieter**. Five runs of
+unchanged code, per stage, over a pre-read baseline:
+
+| stage | spread over 5 runs |
+|---|---|
+| Gunzip | 0.1 MB |
+| UTF-8 decode | 0.0 MB |
+| Tokenize | 0.1 MB |
+| Parse IDEActivityLog | 0.1 MB |
+| peak | 2.6 MB (0.18%) |
+
+Timing over those same runs varied 179–204 ms, so this is a genuinely quieter
+metric and not a quiet machine. `xclogparser-bench --warmup 0` prints it.
+
+### Two traps, both of which produced a wrong answer first
+
+**`phys_footprint` never comes back down.** Released memory goes back to the
+malloc zone, not to the kernel, so each iteration reads a *cumulative* high-water
+mark rather than its own cost. Across five iterations the `read` stage reported:
+
+    15.9 MB   -25.4 MB   583.1 MB   759.2 MB   1029.4 MB
+
+A negative reading is the tell. Only the first pass over a fresh heap measures
+one iteration; for another sample, repeat the **process**, not the loop. This is
+why `--warmup 0` is required for memory, and why the benchmark refuses to print
+footprints at all when a warmup ran rather than printing numbers that look fine.
+
+**The median of three hid it completely.** Running `-n 3` gave per-stage medians
+that agreed to ±1 MB across runs and looked like a working metric. They agreed
+because the median of three always returns iteration 2 — the metric was stable
+only in the sense of being consistently the same wrong number, and it would have
+silently changed meaning with `-n 4`. An aggregate that looks stable is not
+evidence the underlying samples are; look at the raw per-iteration values.
+
+### What it immediately showed
+
+With a metric that resolves 35 MB, the per-stage table says where the memory is
+(265 MB log, 15.9 MB compressed):
+
+    Read file                 0.2 MB      +0.2 MB
+    Gunzip                  270.4 MB    +270.2 MB
+    UTF-8 decode            567.7 MB    +297.3 MB
+    Tokenize (Lexer)       1164.6 MB    +596.9 MB
+    Parse IDEActivityLog   1399.7 MB    +235.1 MB
+    Parse BuildStep tree   1429.1 MB     +29.3 MB
+
+Peak is **5.4× the uncompressed input**, and the decode step alone costs ~1.1× the
+log to turn `Data` the process already holds into a `String`.
+
+It also settled a question the old metric got wrong: removing the dead
+`Scanner.string` field changes memory by **0.0 MB** (tokenize 1164.5–1164.6 MB,
+unchanged). Swift `String` is copy-on-write, so that field was a retain of a
+string the caller already holds alive — dead code worth deleting, but never the
+265 MB it looked like. Report memory in absolute units for the same reason time
+shares are misleading: a change to the total moves every other stage's share.
+
+### When peak RSS *is* the right metric
+
+The section above says peak RSS cannot resolve a 35 MB change, and it cannot — on
+a *stage inside* the process, where the noise is ±170 MB. But two reporter-side
+changes were measured only by peak RSS, because `phys_footprint` structurally
+could not see them:
+
+- replacing GzipSwift's incremental inflate held two buffers alive briefly. The
+  bench harness reported peak **unchanged** at 900.7 MB; `/usr/bin/time -l` showed
+  **+234 MB**. The memory was freed before the stage ended, so a stage-boundary
+  footprint reading missed it entirely.
+- writing the report into `[UInt8]` instead of `JSONEncoder`'s buffer regressed
+  peak by **18.7 MB**, reproducible to the byte across five runs
+  (1003.0 → 1021.8 MB).
+
+Two conditions make peak RSS trustworthy here, and both have to hold. First, the
+process must do one job and exit — no `-n 3` loop, so there is no cumulative
+high-water mark and no median-of-three artifact. Second, the change has to be in
+allocation *shape* rather than a transient: the 18.7 MB above repeated to the byte
+because the buffer's growth curve is deterministic.
+
+The rule that follows: the bench harness does not cover the reporter, so **any
+change to how the report is built or handed over must be measured with
+`/usr/bin/time -l` on the real CLI**, and a harness reading of "unchanged" is not
+evidence.
+
+### A growable buffer's overshoot is a real memory cost
+
+The 18.7 MB regression above was diagnosed wrong twice before being measured.
+
+The first hypothesis was `Data(bytes)` copying the whole 170 MB report. Plausible,
+and it was the actual cause of the gunzip regression — but removing the copy moved
+peak RSS by **0 MB**. The real cause was that `[UInt8]` grows geometrically: at
+180 MB the last doubling reserves 272 MB, overshooting by ~92 MB.
+
+Two things made this hard to see. `JSONEncoder` overshoots too, so the visible
+delta was 18.7 MB rather than 92 MB — the two allocators just land on different
+boundaries, and comparing against the *data size* rather than against the previous
+allocator's overshoot suggests nothing is wrong. And `--reporter summaryJson`,
+which does not touch the new code at all, showed +5.8 MB, which is what proved the
+delta was not all in the reporter.
+
+If output size is knowable before writing, reserve it: here the step count times a
+measured bytes-per-step (both benchmark logs are just under 2.4 KB/step) removed
+the regression outright.
+
+## Duplicate values in the output are not duplicated memory
+
+Counting repeated values in the parsed JSON is an easy way to find apparent waste,
+and it was wrong every single time it was tried here:
+
+| claim, from output counting | actual, measured |
+|---|---|
+| `Scanner.string` holds a 265 MB copy of the log | **0.0 MB** |
+| 124,179 `classNameRef` tokens copy ~160 distinct names | **≤8.4 MB** |
+| `buildIdentifier`/`machineName`: 42,148 uses of 1 value | **≤9 MB** |
+
+Swift `String` is copy-on-write, so passing one around is a retain, not a copy of
+its bytes. Handing the same stored property to 42,148 structs allocates one string,
+not 42,148 — and 21–45 byte class names are past the small-string limit, so this is
+real COW sharing rather than an artifact of short strings.
+
+### The two-line check that settles it
+
+Rather than building a deduplicating interner and hoping, defeat COW at the call
+site and see whether memory moves:
+
+```swift
+// forces a genuine independent copy
+String(decoding: Array(value.utf8), as: UTF8.self)
+```
+
+Then `xclogparser-bench <log> -n 1 --warmup 0`. If forcing real copies does not make
+things measurably worse, the values were already shared and deduplicating them
+cannot make things better. That experiment is how all three rows above were closed,
+and it costs minutes rather than the days an interner would.
+
+The corollary is that a ratio like "776 references per declaration" is evidence about
+the *log format*, not about memory. Get a number from the metric before believing it.
+
+### The opposite trap: a cost that is real but not removable
+
+A ceiling probe can also come back *positive* and still not justify the work. The
+lexer's per-token `String`s were measured, by replacing every scanned payload with a
+shared constant, at **295 MB and half the tokenize time** — a real cost, unlike the
+three rows above. The conclusion "so make `Token` carry a byte range instead" was
+still wrong.
+
+Those strings are not a duplicate of the input; they *are* the parsed model's
+storage. `IDEActivityLogSection` stores plain `String` fields assigned straight from
+`ActivityParser.parseAsString`, whose only transform is `trimmingCharacters` — and
+that returns the same buffer when there is nothing to trim. On the flagged log only
+44,215 of 394,106 string tokens (11.2%) would be trimmed, so ~89% of the 258 MB is
+shared with the model, not copied.
+
+The forced-copy check confirms it from the other direction: giving every string token
+private storage moved the footprint 649.3 → 684.7 MB, **+35 MB**, not +258 MB. Had the
+strings been a redundant copy, forcing real ones would have cost the full 258 MB.
+
+So a range-based `Token` would remove 258 MB from the lexer and oblige the parser to
+build ~230 MB of it straight back, because the model needs real `String`s. That is
+moving an allocation, not deleting one.
+
+**Ask who else holds the value before removing an allocation.** A cost that is real,
+and even dominant in its own stage, is only worth removing if nothing downstream needs
+it materialised anyway.
+
+### Profile the real command, not just the library
+
+Profiling had only ever been pointed at `xclogparser-bench`, which stops at the
+`BuildStep` tree. Pointing DTrace at the actual CLI instead:
+
+```bash
+sudo dtrace -x ustackframes=40 \
+  -n 'profile-997 /pid == $target/ { @s[ustack(40)] = count(); }' \
+  -c "./.build/release/xclogparser parse --file <log> --reporter json" > cli.stacks
+```
+
+gave a completely different answer from every library profile before it (6,718
+samples, baseline log):
+
+| share | frame |
+|---|---|
+| **53.96%** | `Foundation JSONWriter.serializeString(_:)` |
+| 9.07% | `Foundation Array.append(contentsOf:)` |
+| 8.29% | `libswiftCore validateUTF8(_:)` |
+| 4.90% | `libswiftCore _Stdout.write(_:)` |
+
+~71% of the program is serializing strings and validating their UTF-8, and every one
+of the `serializeString` samples arrives via `serializeObjectElement` — object field
+values. The benchmark's 644 ms covers 14% of a 4.70 s command.
+
+Confirmed causally with flags rather than left as a correlation:
+
+| | time | peak | output |
+|---|---|---|---|
+| default | 6.96 s | 5585 MB | 2076 MB |
+| `--trunc_large_issues` | 2.72 s | 1921 MB | 617 MB |
+| `--omit_warnings --omit_notes` | **1.39 s** | **913 MB** | **132 MB** |
+
+### The output format is rarely the thing to redesign
+
+The instinct when a 14 MB input yields a 2 GB file is to change the on-disk model —
+shorter keys, a binary encoding, dropped fields. Byte-accounting the output first says
+otherwise:
+
+    1858.5 MB   89.5%  detail
+       26.7 MB    1.3%  signature
+       12.1 MB    0.6%  documentURL
+        9.4 MB    0.5%  title
+       ...everything else combined: ~65 MB
+
+One field is 89.5% of the file. A new encoding would carry the same duplicated text
+and win only the syntax overhead — `json` and `flatJson` already differ by under 3%
+despite different shapes, while `summaryJson`, which omits per-issue detail, is 11×
+faster on the same tree. **Account for the bytes by field before redesigning a
+format.**
+
+This played out as the accounting predicted: fixing what went *into* that one field cut
+the output 12× with the schema untouched. A format redesign would have been a large
+change chasing the remaining ~65 MB.
+
+### Measure the whole program, not the stages you named
+
+The stage table *used to* stop at the `BuildStep` tree, because that is where the
+library's parsing ends. The actual CLI then hands that tree to a reporter, and that
+turned out to be where most of the memory goes:
+
+| | benchmark peak | real `parse --reporter json` |
+|---|---|---|
+| a 265 MB log, warnings-heavy | 899 MB | **3116 MB** |
+| a 167 MB log, no flags | ~900 MB | **5859 MB** |
+
+The cause was `Notice.detail`, which was handed the entire text of its log section. In
+memory that is nearly free — the details are COW references to ~7 MB of distinct
+buffers, and a forced-copy check prices materialising them at **+980 MB**. Nothing in
+the parsing pipeline pays that. `JSONEncoder` does, once per notice, which is how
+1,858 MB of logical `detail` (deduping to 6.7 MB) came out of a 14 MB input.
+
+This is fixed: each notice now carries its own diagnostic, sliced out of the section
+text by the per-location lookup that Swift issues already used. Output dropped 12×
+(2076 → 167 MB), peak RSS 6× (5857 → 966 MB) and wall time 4.8× (7.55 → 1.58 s). The
+figures in the table above are the *pre-fix* measurements, kept because the lesson is
+about the measurement gap, not the bug.
+
+A full round of memory work happened against this harness without anyone noticing a
+400× amplification sitting one stage past its last measurement. Two lessons:
+
+- **A stage that is not in the table is assumed free, and that assumption is never
+  stated.** Before trusting a peak figure, check it against `/usr/bin/time -l` on the
+  real command. A large gap means the harness is measuring a subset.
+- **COW sharing hides costs until something serialises.** "Cheap in memory" and "cheap
+  to output" are different questions. Any measurement taken before encoding cannot
+  answer the second one.
+
+There is now an `Encode JSON` stage running the reporter the CLI defaults to, so the
+harness sees the whole command. It dominates both tables — on the 167 MB log,
+**90% of the time and +4075 MB of the footprint** — which is correct, not a bug, but
+it changes what two figures mean:
+
+- **`PEAK` is no longer comparable to figures recorded before the stage existed.** It
+  now includes the encoded report, so the same code that reported 899 MB reports
+  ~2824 MB. When comparing against an older number, compare `Parse BuildStep tree`
+  instead, which still means what it always did.
+- **The report is encoded to memory, not to disk.** Writing 1–2 GB per iteration would
+  make the benchmark I/O-bound and measure the filesystem. It is also retained on
+  purpose: its size is the thing being reported, so `/dev/null` would hide it.
+
+#### A gigabyte-scale stage exposed a bug in the memory gate
+
+`memoryIsMeaningful` guarded against a warmup growing the heap, but not against an
+*earlier log in the same process* doing it. The per-log baseline is taken fresh, while
+the heap it is measured against is still at the previous log's high-water mark — and
+`phys_footprint` never comes back down. That error had always been there; it was small
+enough to look like noise until a stage started allocating gigabytes, at which point
+the second log of a two-log run printed **−926.5 MB**, where measured alone it reports
+**+1931.8 MB**. A negative footprint is what finally made it visible. Memory is now
+only reported for the first log of a process.
+
+### A stage can measure code the shipped binary no longer runs
+
+Worse than a missing stage, because a missing figure at least reads as "not measured".
+A stage that times the wrong implementation reports a plausible number and looks
+healthy indefinitely. This has now happened twice in this harness:
+
+- **The encode stage.** It went through `MemoryOutput`, which is not a
+  `StreamingReporterOutput`. When the reporter learned to stream, the CLI switched
+  paths and the harness kept timing the buffered fallback. Found by accident.
+- **The gunzip stage.** It calls `data.gunzipped()` (GzipSwift) while the shipped path
+  is `LogLoader.loadBytesFromURL` → `Gunzip.inflate`, the hand-written zlib into one
+  preallocated buffer. Every peak figure recorded here carries **~37 MB of GzipSwift
+  overshoot** the real binary never pays. Found by looking for it deliberately.
+
+Both drifted for the same structural reason: **the harness could only reach a
+substitute.** `Gunzip` is `internal`, so the bench module cannot call the shipped
+inflate at all. Nothing could have kept them aligned.
+
+So: when a stage stands in for shipped code, the check is not "does this look like the
+right number" but **"is this the same call the CLI makes"** — read the CLI's path and
+compare, per stage. If the answer is "the bench cannot reach that code", that is the
+finding, and the fix is usually making one entry point `public` rather than reproducing
+it in the harness.
+
+#### A footprint delta measured second is not falsifiable
+
+The streaming encode stage reported +2.1 MB against the buffered path's +188 MB. That
+figure cannot fail. The buffered stage runs first and maps ~188 MB; `phys_footprint`
+never comes back down, so the streaming stage that follows allocates from pages that
+are already mapped and reads near-zero **even if it secretly buffered the whole
+report**.
+
+Same shape as the per-log baseline bug above, one stage later, written while citing
+this file. Two variants of the same measurement cannot share a heap history: run the
+cheaper one first, or run each in its own process. And when two stages measure
+alternative paths, state in the code which reading is the trustworthy one — otherwise
+the next person re-derives this the hard way.
+
+Fixed with `--encode-path`, which runs one encode path per process so its delta is
+measured against a heap no other encode has touched. Ordering was rejected: it only
+moves the defect onto whichever stage lands second. Under `both` the second stage is
+still run and timed — a stage that vanishes unless you pass a flag is its own
+regression — but the memory table prints `not falsifiable here` rather than a
+plausible number, and the JSON emits `footprintNotFalsifiable` rather than a
+`footprintBytes`.
+
+The point is that the new figure *can* fail, which was verified rather than assumed.
+On the 265 MB log (94.2 MB report), each in its own process:
+
+| `--encode-path` | encode stage delta | peak |
+| --- | --- | --- |
+| `buffered` | +188.5 MB | 1053.2 MB |
+| `streaming` | +3.1 MB | 868.3 MB |
+| `streaming`, with the chunks deliberately retained | **+96.2 MB** | 963.0 MB |
+
+That third row is the control, and it is the one that matters: making the streaming
+output secretly buffer every chunk moves the reading from +3.1 MB to +96.2 MB — the
+whole report. The old ordering would have hidden that same sabotage at +2.1 MB. Note
+also that +3.1 MB is the *correct* answer here, not a suspiciously low one: streaming
+exists precisely so the report is never resident, so expecting "roughly the report
+size" from it is backwards. Only the buffered path should pay that.
+
+### Two probes that produced confident wrong answers
+
+Both of these ran here and had to be thrown out:
+
+- **"Free it and watch memory fall."** Dropping all 1.45M tokens reported 0.0 MB
+  reclaimed, which reads as proof the model owns everything independently. A control
+  that allocated *and freed a known-dead 300 MB blob* reported 0.0 MB too —
+  `phys_footprint` never decreases. Sharing must be measured as growth in a fresh
+  process, never as shrinkage in a live one. Always run the control.
+- **Neutering payloads through the whole pipeline.** `ActivityParser` validates string
+  contents and dies with `Unexpected attachment identifier`, so a constant or
+  truncated payload cannot reach a peak measurement. Ceiling probes on token contents
+  are only usable against the lexer alone.
+
+## Foundation is not always the fast option
+
+The two fixes above replaced Foundation calls that the profile had ranked first
+and second among what remained:
+
+| what | before | after |
+| --- | --- | --- |
+| `NSDateFormatter` in `toDate` | 7.30% | 0.00% |
+| `range(of:)` across its call sites | 11.46% | 0.00% |
+
+Both replacements cost far less than what they removed — `ISO8601DateString` is
+6.02% against the formatter's 7.30%, and `isDeprecatedWarning` fell to 1.57%
+(with the byte search itself at 0.59%) — but note the first one is *not* a 7.30%
+saving. Read those numbers together, not just the "before" column.
+
+Two transferable points:
+
+- **The date formatter's cost was steady-state, not setup.** It was already a
+  `lazy var`, so caching or reusing the instance had nothing left to win; the
+  7.30% was ICU field formatting plus Objective-C bridging on every call. What
+  made it removable was that nothing varied — literal format, `en_US_POSIX`, UTC
+  — so the whole result is integer arithmetic.
+- **Several needles against one haystack is the shape to look for.**
+  `isDeprecatedWarning` ran four `contains` calls in sequence over the same
+  string, so a non-matching text paid four full scans. All four phrases share the
+  substring `deprecated`, so one scan for it now rules out all four, and the
+  four-scan path is reached only for text that actually mentions deprecation.
+
+### Reproducing a formatter exactly is harder than it looks
+
+`SSSSSS` does not mean microseconds. `DateFormatter` computes *milliseconds*,
+rounds them, and zero-pads to the requested width, so `0.1234564` formats as
+`.123000`. Truncating to six digits — the obvious reading — disagrees on nearly
+every fractional input.
+
+Worse, at an exact half-millisecond tie ICU's choice could not be reproduced at
+all. These were each falsified by measurement: rounding the binary double
+half-up or half-even, snapping the fraction to a fixed decimal precision (4
+through 7), and rounding the shortest round-trip decimal representation. The
+decisive pair is `676.49996…` rounding *down* while `613.49999…` rounds *up*,
+with the result stable across the whole-seconds magnitude, which rules out
+precision loss in the subtraction.
+
+That divergence is shipped deliberately, and it is small but not zero: 24 of
+223,938 real section dates (0.011%), always by exactly 1ms. Xcode writes
+timestamps with 4 decimal places, so such ties are common rather than
+theoretical — reasoning that they would be rare was wrong, and only the
+whole-log diff showed it.
+
+### Replacing `JSONEncoder`: read its behaviour off the binary, not off the spec
+
+Writing the build-step report directly instead of through `Encodable` cut runtime
+roughly in half. The encoding itself was straightforward; matching Foundation
+exactly was not, and three of its choices are not what the spec or intuition
+suggests. Each was found by encoding samples with `JSONEncoder` and dumping bytes:
+
+- **`nil` optionals produce no key at all**, not `null`. A synthesized
+  `encode(to:)` calls `encodeIfPresent`, so a step with no warnings has no
+  `warnings` key in today's output. Writing `null` instead adds a key to nearly
+  every step — a schema change, found by diffing key *sets* against `JSONEncoder`
+  rather than comparing rendered output.
+- **`/` is escaped as `\/`.** RFC 8259 makes this optional and most encoders skip
+  it; Foundation does it. A build log is almost entirely paths, so getting this
+  wrong changes nearly every string in the report.
+- **Integral doubles lose their `.0`.** Foundation prints `3` where Swift's
+  `description` gives `3.0`. The exact rule — `description` with a trailing `.0`
+  stripped — held for all 400,000 values tested (a xorshift bit-pattern sweep plus
+  edge cases), but it had to be established by sweep, not assumed. It is not an
+  edge case: `compilationDuration` is integral on every non-compilation step.
+
+The check that caught the first of these is worth reusing: parse both outputs and
+diff the recursive set of key paths, so a missing or extra field anywhere in the
+tree fails regardless of ordering or value formatting. Value equality alone would
+not have caught it, because a missing key and a `null` key both read as "no
+warnings" to a consumer.
+
+One further note: `JSONEncoder` emits keys in hash-table order, which **varies
+between processes**. So there was no byte-exact baseline to diff against before
+this change, only a structural one — and fixing key order to declaration order
+made the report byte-reproducible for the first time, which is a better
+regression check than the structural diff it replaces.
+
+### Diff whole-log output, and ignore key order
+
+The check that gave confidence here was parsing two real logs with the old and
+new binaries and comparing the reporter JSON. Compare it **parsed**, not as
+bytes: dictionary serialization order varies between runs, so `cmp` reports a
+difference at the first step in every file and tells you nothing. Comparing
+decoded structures instead showed the only differences in two full logs were
+those 24 date fields — every target name, step type, warning, error and linker
+statistic byte-identical, which is what established the `range(of:)` rewrites as
+behaviour-preserving.
+
+That diff also surfaced a latent crash unrelated to performance:
+`getTargetFromCommand` searched for `in target '` and `' from project '`
+independently and subscripted the string with the resulting range, which traps
+when the markers appear in reverse order. It now returns `nil`, and there is a
+regression test.
+
+But note what a whole-log diff cannot tell you. Replacing the clang-flag regex
+(`\[(-W[\w-,]*)\]+`) produced identical output on both logs — and neither log
+contains a single `[-W`, so the comparison only ever exercised the no-match path.
+It was worth running, because that path is the hot one, but the extraction
+behaviour was established by a differential test against the original regex, not
+by the logs. **Check that your fixture actually contains the input you think you
+are testing** before reading "identical" as "correct".
+
+### A fallback that almost always triggers is not a fallback
+
+The first version of that scanner deferred to the regex whenever it saw a
+non-ASCII byte *anywhere* in the section text, on the reasoning that real
+diagnostics are ASCII. They are — 99.974% of bytes in a 278 MB log. But the
+remaining 0.026% were spread widely enough that nearly every section contained
+one, so nearly every section still went through ICU: re-profiling showed the
+regex still at 22.8% of samples, barely moved.
+
+The fix was narrowing the bail-out to where a non-ASCII byte can actually change
+the answer — inside a candidate flag body, since `\w` is Unicode-aware — rather
+than anywhere in the string. ICU then dropped to 0.10% and throughput went from
+119 to 149 MB/s.
+
+The general lesson: when a fast path has an escape hatch, measure how often the
+hatch is taken. "Rare in principle" and "rare per section of a 278MB log" are
+very different claims, and only the profile distinguishes them. Had I trusted the
+first version's passing tests and identical output, I would have shipped a
+rewrite that bought almost nothing.
+
+### Two searches over the same bytes is one too many
+
+`parseSwiftIssuesDetailsByLocation` looked for `": error:"` and then, failing
+that, `": warning:"` — the direct translation of
+`range(of:) ?? range(of:)`. Each search walked the whole line comparing its
+marker's first byte at every offset, so every line was scanned twice. On a real
+log that is close to worst case: `": error:"` does not occur *once* in
+278MB, so the first search always ran to the end and always failed.
+
+Both markers start with `":"`, and only 0.78% of that log's bytes are `":"`. One
+pass anchored on that byte, trying both markers only at those positions, took
+`parseSwiftIssues` from **31.4% to 17.8%** of samples. The `??` precedence needs
+care to preserve — it is by *marker*, not position, so a later `": error:"` must
+still beat an earlier `": warning:"`, which means finishing the line rather than
+returning the first hit.
+
+Worth checking the frequency of what you search for. A pattern that never matches
+costs full price on every call.
+
+### Do not build a String you are about to parse as a number
+
+The lexer's hottest path scanned a run of digits, built a `String` from those bytes,
+and handed it to `UInt64(_:radix:)`. Every SLF value has such a payload — a length,
+a class-name index, a hex-encoded double — so this ran tens of millions of times
+per log, and each one was a heap allocation plus a UTF-8 validation pass, to
+produce a string that was immediately walked again by the integer parser.
+
+`scanCharacters` now returns the byte `Range` it consumed, and the payload is
+accumulated straight from the bytes. Two smaller changes came with it: `Set<UInt8>`
+membership became a 256-bit bitmap held inline in the struct (`Set.contains` hashes
+and probes a heap buffer; a byte has only 256 possible values, so four `UInt64`
+words in registers answer the same question), and `String(bytes:encoding:)` became
+`String(decoding:)`, which does not copy.
+
+Lexer cost fell **67%** in absolute samples, and total work for the whole parse fell
+**38%** — throughput went from ~150 to ~245 MB/s.
+
+Note the reporting trap in that last pair of numbers. As percentage-of-samples the
+lexer went 39.3% → 20.8%, while *every other subsystem's percentage went up* —
+`parseSwiftIssues` from 17.8% to 24.9%. None of them got slower; the denominator
+shrank. Their absolute sample counts all fell 13–28%, because not allocating a
+string per token takes malloc traffic out of the whole program. When total work
+changes, compare absolute counts, not shares.
+
+### A differential test found a bug the benchmark logs could not
+
+The sweep for the above (20,000 generated inputs against the original Foundation
+implementation) failed 3,678 times, and every failing input contained a NUL byte.
+The cause was pre-existing and unrelated to the marker search: the function
+reached its bytes via `withCString` and derived the length by scanning to the
+first NUL, so section text containing one was silently truncated and every
+diagnostic after it dropped. Both benchmark logs contain exactly zero NUL bytes,
+so no amount of whole-log diffing would ever have surfaced it — but Xcode logs
+*can* contain them, which is why this repo has tests named for preserving them.
+
+Fixed by using `withContiguousStorageIfAvailable` (with a `makeContiguousUTF8`
+retry for lazily-bridged strings). Two complementary checks, then: whole-log
+diffs prove you did not break the data you have, and differential tests against
+the old implementation probe the inputs you do not.
+
+## Attribute a hot symbol by caller before believing your theory about it
+
+A profile names the function that allocated, which is often not the function
+worth changing. Twice in a row here, a plausible story about a symbol was wrong,
+and the check that settled it was cheap.
+
+`_ArrayBuffer._consumeAndCreateNew` sat at 12.4% of allocations — array growth.
+The obvious suspects were the six `ActivityParser` list parsers, which append in a
+loop and knew their element count up front. Adding `reserveCapacity` to all six
+removed **9,327** allocations, about 4% of the symbol's total.
+
+Grouping the same stacks by *caller* instead of by innermost frame located it:
+
+```
+49%  Lexer.scanTypeDelimiter          112,848
+38%  CaseFolding.asciiBytes            86,334   (under NoticeType.fromTitle)
+```
+
+The second one is the kind of thing no symbol-level reading finds.
+`NoticeType.fromTitle` matched with `case Prefix("Lexical"):`, and a struct
+written in a `case` pattern is **constructed on every call** — each initializer
+lowercased its pattern and built a `[UInt8]` of it. Roughly 86,000 byte arrays
+per run, all comparing against string literals that never changed. Hoisting them
+to `static let` was three lines and removed 38% of all array growth.
+
+The aggregation is a small change to the allocation recipe: instead of keying on
+the innermost project frame, keep the stacks whose innermost frame matches the
+symbol you are chasing, then key on the *next* few frames up.
+
+```bash
+# from raw.stacks produced by the allocation recipe above
+python3 - <<'PY'
+import re, collections
+agg = collections.Counter(); cur = []; total = 0
+for line in open("raw.stacks", errors="replace"):
+    s = line.strip()
+    if re.fullmatch(r"\d+", s) and cur:
+        n = int(s)
+        frames = [f.split("`", 1)[1].split("+0x")[0]
+                  for f in cur if f.startswith("xclogparser-bench`")]
+        if frames and "TARGET_SYMBOL" in frames[0]:
+            total += n
+            agg[" <- ".join(frames[1:4])] += n
+        cur = []
+    elif "`" in s:
+        cur.append(s)
+for path, count in agg.most_common(10):
+    print(f"{count * 100 / total:6.2f}%  {count:>9}  {path}")
+PY
+```
+
+The same grouping is what turned "`StandardOutput.write` is 16.4%, and writing
+is irreducible" into an actionable finding: 68% of it was the `write` syscall,
+but 25% was `validateUTF8`, because the function rebuilt a 171 MB `String` from
+the report `Data` before printing it. Removing that copy took 159 MB off peak
+RSS. A frame that looks like unavoidable I/O can still have a third of it be
+something you added.
+
+## Probe a projected win before implementing it
+
+Cheaper than implementing and measuring, and it has already prevented one
+pointless change. A review proposed extending `trimmedIfNeeded` with a
+hand-rolled byte-level ASCII trim so the Foundation fallback would not be needed,
+estimating up to ~4% of runtime.
+
+Two counters and one stack breakdown, about two minutes of work:
+
+- The fallback fires **11.6%** of the time (45,835 slow against 348,271 fast).
+- Of the samples inside `trimmedIfNeeded`, only ~9% are in Foundation's trim.
+  **54% is `_platform_memmove` plus `_allASCII`** — building the returned String,
+  which both paths pay.
+
+So the real target was ~9% of a 5.7% frame: under 0.5% of runtime, in exchange
+for hand-written Unicode boundary handling. Declined.
+
+The general shape: when a projection depends on how often a branch is taken, or
+on which part of a frame the time is really in, count it first. An estimate that
+cannot survive two counters was not going to survive an implementation.
+
+### …and then the same change was worth 49x, on the other platform
+
+The probe above was run on macOS, and its conclusion held there. On Linux the
+identical change made `Parse IDEActivityLog` **18.33 s → 366.7 ms**, and the whole
+run 23.12 s → 4.76 s.
+
+Nothing about the probe was wrong. What was wrong was reading "under 0.5% of
+runtime" as a property of the change rather than of the platform it was measured
+on. `trimmingCharacters(in:)` is cheap where Foundation has a native `NSString`.
+Where it does not, it routes through
+`NSString.substring` → `String._slowFromCodeUnits` → `UTF16.ForwardParser.parseScalar`,
+converting the string to UTF-16 one scalar at a time; `perf` put that chain at over
+55% of the stage. The macOS probe could not have seen this, because the expensive
+path does not exist there.
+
+Two counts made the fix bigger than the original proposal, and both came from
+counting rather than reasoning:
+
+| | count | share of string tokens |
+|---|---|---|
+| already trimmed (fast path) | 383,097 | 62.2% |
+| **empty** | 182,241 | **29.6%** |
+| needed an ASCII trim | 50,514 | 8.2% |
+| non-ASCII at an edge | 0 | 0.000% |
+
+The empty strings were the surprise: 3.6x more than the strings that needed any
+trimming at all, and every one of them went to Foundation to have whitespace
+removed from a string with no characters in it. `bytes.first` returns nil, the
+guard returned nil, and the fast path was skipped for the case with nothing to do.
+
+Measured, 3 interleaved rounds each, `-n 1 --warmup 0`:
+
+|  | Linux | macOS |
+|---|---|---|
+| Parse IDEActivityLog | 18.33 s → **366.7 ms** | 124.1 ms → **92.3 ms** |
+| stage share of run | 82% → 6.9% | 8.9% → 6.9% |
+| TOTAL | 23.12 s → 4.76 s | 1.394 s → 1.346 s (noise) |
+| stage allocations | 3,335,143 → 1,301,746 | 420,745 → **187,990** |
+| stage footprint | +270.6 → +270.4 MB | +306.5 MB, unchanged |
+
+macOS TOTAL stays inside run-to-run noise — the stage is under 9% of that run —
+but the stage itself is reliably faster and allocates 232,755 fewer objects. So
+the macOS probe's "not worth it" was an understatement even on macOS, because it
+counted only the trim and not the empty-string detour.
+
+The lesson that replaces the earlier one: a measurement is scoped to the platform
+it ran on. "Foundation wins here" was true, and "here" was doing more work in that
+sentence than it looked.
+
+Correctness is the part worth stating plainly. The first implementation was
+**wrong**: after removing an ASCII whitespace run, the new boundary can be a
+*non-ASCII* member of `.whitespacesAndNewlines` — `U+00A0` and the `U+2000` block
+are whitespace too — and trimming has to continue through it. On
+`"\r\n  \u{00A0}nbsp inside  \t"` it returned `" nbsp inside"` where Foundation
+returns `"nbsp inside"`. A test written at the same time as the change caught it.
+The fix re-checks the post-trim boundary and hands the whole string back to
+Foundation when it is >= 0x80, so the fast path only fires when the answer is
+provable from the bytes.
+
+One caveat on the 29.6%: that is a property of this generator profile, not of a
+real Xcode log — no real log was available to check it against. The direction of
+the fix does not depend on the ratio; the size of the win does.
+
+## The comment can describe an intent the code does not implement
+
+`parseSwiftIssues` collected a diagnostic's continuation lines as byte ranges and
+joined them with `detail += "\n" + string(from: bytes, range: continuation)`,
+under a comment saying the lines were "joined once, so the accumulated detail is
+never re-copied". But `+=` in a loop is a repeated copy, and each iteration
+allocates three Strings: the piece, the concatenation, and the grown result.
+
+heaptrack ranked those two lines second and third among all allocators on the
+baseline log — 243,094 and 219,347 calls, both with **0 B peak consumption**, the
+signature of a pure temporary. Copying into one buffer sized up front, and
+converting once, costs one String per detail instead of n:
+
+| | before | after |
+|---|---|---|
+| stage allocations | 2,097,017 | **1,602,911** (−494,106, −23.6%) |
+| run allocations | 2,718,739 | 2,224,633 (−18.2%) |
+| stage footprint | −2.6 MB | **−11.1 MB** |
+
+The time gain is real but not cleanly separable, and saying so is the honest
+report: over eight interleaved pairs the stage ran 1.788–1.937 s before (median
+1.827) and 1.660–1.901 s after (median 1.745). After wins seven pairs of eight,
+the ranges overlap, and one pair reverses. TOTAL is unchanged within noise. The
+allocation count is deterministic — it reproduced to within 4 across eight runs —
+so that is the figure worth quoting, and the timing is not.
+
+## Roughly 3% of this binary's profile is the harness, not the parser
+
+`PathCoverage.detect` re-walks the section tree to report which conditional parser
+paths a log never exercised, and it does that with uncached `NSRegularExpression`s
+— about 3% of samples in a whole-process `perf` profile.
+
+It is deliberately outside every `runStage`, so no stage timing includes it and
+the reported figures are unaffected. But a flat profile of `xclogparser-bench`
+does include it, and `isWholeModuleCompile` sitting near the top of a regex
+breakdown looks like a parser problem when it is not. Discount it from the
+denominator before concluding anything about regex cost in the library.
+
+## Two data-oriented ideas that measured as nothing
+
+Both came from a probe over the parsed tree, both looked well-founded, both were
+implemented, measured, and reverted. The measurements are the useful part.
+
+### An allocation attributed to a line is not one a guard can skip
+
+heaptrack put 40,335 allocations on `IDEActivityLogSection+Parsing.swift:119`, a
+`range(of:options:.regularExpression)` that recompiles its pattern on every call.
+The pattern is anchored — `^CompileSwift\s\w+\s\w+\s.+\.swift\s` — so a byte prefix
+test should reject most inputs before the regex engine is entered at all. (The
+anchor really is start-of-string, not start-of-line: verified against the engine,
+including after `\n` and `\r`.)
+
+Measured over four interleaved pairs: stage allocations 2,097,025 → 2,097,018, a
+saving of **seven**. Stage time was *slower* in three of four pairs.
+
+The line sits inside `getSwiftIndividualSteps`, which is only called for
+`.swiftCompilation` steps — whose `commandDetailDesc` does start with
+`CompileSwift`. So the prefix check passes and the regex runs exactly as before.
+The 40,335 allocations were the regex *matching*, not its compilation, and no guard
+in front of that line can avoid them. Reverted.
+
+`ClangCompilerParser` has three genuinely uncached patterns, one of them compiled
+six times per linker section. They are all gated behind `hasPrintStatisticsLinkerFlag`,
+which no available log sets, so caching them would be an unverifiable claim and was
+left alone.
+
+### A microbenchmark's memory figure does not transfer to a 270 MB working set
+
+The probe found something real: 53,742 sections hold exactly **one** distinct
+`domainType` value, in **53,742 distinct buffers** — confirmed by comparing buffer
+addresses rather than assumed. Each value is 32–39 UTF-8 bytes, past the 15-byte
+limit for inline storage, so every one is a heap allocation.
+
+The reason there is no copy-on-write sharing is worth keeping: CoW shares when an
+existing `String` is copied, and the lexer does not copy one. It builds each string
+out of the raw log bytes with `String(decoding:as:)`, which allocates. A standalone
+53,742-iteration reproduction of that showed peak memory falling 11.2 MB → 6.9 MB
+when the values were interned.
+
+That 4.3 MB does not exist in the real parser. Interning `domainType` in
+`ActivityParser` measured:
+
+- stage allocations 187,990 → 187,991 (**+1**)
+- stage retains 1,301,746 → **1,355,491** (+53,745 — one per section, for the lookup)
+- stage footprint +270.4 MB → +270.4 MB, **unchanged**; PEAK unchanged
+- stage time slower in three of four pairs
+
+The probe held 53,742 strings in an array with nothing else alive, so those buffers
+dominated its footprint. In the parser they are noise against a 270 MB stage, and
+neither `phys_footprint` nor `RssAnon` resolves them. Reverted.
+
+Interning could never have removed the allocation anyway: it happens in the lexer,
+before the parser sees the token, so interning only drops a retention afterwards.
+Removing it means not materialising token strings at all — a change to the public
+`Token` enum, and a different piece of work.

@@ -8,7 +8,20 @@ build/
 DerivedData/
 
 /samples
+*.xcactivitylog
+Benchmarks/Results/
+
+# beads issue tracker workspace
+.beads/
 /releases
+
+# Build logs, whether generated for benchmarks or copied from a real build. Real ones carry
+# absolute paths, target and project names and the source layout of whatever was built, so they
+# must not be committed; generated ones are derived artifacts that anyone can regenerate from
+# Benchmarks/Profiles.
+*.xcactivitylog
+Benchmarks/Logs/
+Benchmarks/Results/
 
 .vscode
 
