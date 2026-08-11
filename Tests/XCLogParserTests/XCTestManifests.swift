@@ -127,6 +127,8 @@ extension ParserTests {
         ("testBuildIdentifierShouldUseMachineName", testBuildIdentifierShouldUseMachineName),
         ("testDateFormatterUsesJSONFormat", testDateFormatterUsesJSONFormat),
         ("testGetIndividualSteps", testGetIndividualSteps),
+        ("testGetTargetFromCommandWithReversedMarkersDoesNotCrash",
+         testGetTargetFromCommandWithReversedMarkersDoesNotCrash),
         ("testParseAppCompilationTimes", testParseAppCompilationTimes),
         ("testParseAppNoopCompilationTimes", testParseAppNoopCompilationTimes),
         ("testParseInterfaceBuilderWarning", testParseInterfaceBuilderWarning),
@@ -223,12 +225,29 @@ extension ISO8601DateStringTests {
     ]
 }
 
+extension CaseFoldingTests {
+    static let __allTests__CaseFoldingTests = [
+        ("testCombiningMarkAgreesWithFoundation", testCombiningMarkAgreesWithFoundation),
+        ("testContainsAgreesWithFoundation", testContainsAgreesWithFoundation),
+        ("testDifferentialSweep", testDifferentialSweep),
+        ("testEmbeddedNulBytesAgreeWithFoundation", testEmbeddedNulBytesAgreeWithFoundation),
+        ("testEmptyPatternKeepsFoundationsAsymmetry", testEmptyPatternKeepsFoundationsAsymmetry),
+        ("testNonCombiningNonAsciiStillMatches", testNonCombiningNonAsciiStillMatches),
+        ("testPatternLongerThanInput", testPatternLongerThanInput),
+        ("testPrefixAgreesWithFoundation", testPrefixAgreesWithFoundation),
+        ("testScalarsThatLowercaseIntoAsciiAgreeWithFoundation",
+         testScalarsThatLowercaseIntoAsciiAgreeWithFoundation),
+        ("testSuffixAgreesWithFoundation", testSuffixAgreesWithFoundation)
+    ]
+}
+
 public func __allTests() -> [XCTestCaseEntry] {
     return [
         testCase(ActivityParserTests.__allTests__ActivityParserTests),
         testCase(ByteSetTests.__allTests__ByteSetTests),
         testCase(ClangWarningFlagsTests.__allTests__ClangWarningFlagsTests),
         testCase(ScannerNumberTests.__allTests__ScannerNumberTests),
+        testCase(CaseFoldingTests.__allTests__CaseFoldingTests),
         testCase(ExactNeedleTests.__allTests__ExactNeedleTests),
         testCase(ISO8601DateStringTests.__allTests__ISO8601DateStringTests),
         testCase(ChromeTracerOutputTests.__allTests__ChromeTracerOutputTests),

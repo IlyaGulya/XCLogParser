@@ -156,6 +156,37 @@ enum CaseFolding {
         return patternIndex == pattern.count
     }
 
+    /// Offset of the first occurrence of `pattern` in `bytes`, or `nil`.
+    ///
+    /// The shared core of `asciiContains`, `asciiContainsExact` and `asciiRange`,
+    /// which differ only in whether they fold case and in what they return. Keeping
+    /// one loop means one place to audit the bounds, rather than three that can
+    /// drift apart.
+    ///
+    /// Naive O(n*m) on purpose: every needle here is a short compile-time constant,
+    /// so a skip table would cost more to build than the scan it saves.
+    private static func firstMatch(of pattern: [UInt8],
+                                   in bytes: UnsafeBufferPointer<UInt8>,
+                                   folding: Bool) -> Int? {
+        guard bytes.count >= pattern.count else {
+            return nil
+        }
+        for start in 0...(bytes.count - pattern.count) {
+            var offset = 0
+            while offset < pattern.count {
+                let byte = bytes[start + offset]
+                guard (folding ? foldAscii(byte) : byte) == pattern[offset] else {
+                    break
+                }
+                offset += 1
+            }
+            if offset == pattern.count {
+                return start
+            }
+        }
+        return nil
+    }
+
     /// Case-insensitive `contains` over UTF-8 bytes, without allocating.
     ///
     /// Returns `nil` if a non-ASCII byte is reached. Unlike `asciiStarts` this may
@@ -167,19 +198,7 @@ enum CaseFolding {
             return false
         }
         return withAsciiBytes(of: input) { bytes in
-            guard bytes.count >= pattern.count else {
-                return false
-            }
-            for start in 0...(bytes.count - pattern.count) {
-                var offset = 0
-                while offset < pattern.count && foldAscii(bytes[start + offset]) == pattern[offset] {
-                    offset += 1
-                }
-                if offset == pattern.count {
-                    return true
-                }
-            }
-            return false
+            firstMatch(of: pattern, in: bytes, folding: true) != nil
         }
     }
 
@@ -211,6 +230,67 @@ enum CaseFolding {
         return bytes.withUnsafeBufferPointer { body($0) }
     }
 
+    /// Case-**sensitive** `contains` over UTF-8 bytes, without allocating.
+    ///
+    /// Returns `nil` if a non-ASCII byte is reached, meaning the caller must fall
+    /// back to `String.range(of:)`/`contains`.
+    ///
+    /// Distinct from `asciiContains`, which folds case. The call sites this exists
+    /// for - compiler flag detection and the deprecation-message checks - use
+    /// `range(of:)`/`contains` without options, which does not fold, so folding
+    /// here would widen what they match.
+    ///
+    /// `range(of:)` accounted for 11.46% of samples across its call sites. Those
+    /// sites test several needles against the same haystack in sequence, so each
+    /// one paid a fresh Foundation search over the whole string.
+    static func asciiContainsExact(_ pattern: [UInt8], input: String) -> Bool? {
+        // `String.contains("")` is `false`; `range(of: "")` is `nil`. Same answer.
+        if pattern.isEmpty {
+            return false
+        }
+        return withAsciiBytes(of: input) { bytes in
+            firstMatch(of: pattern, in: bytes, folding: false) != nil
+        }
+    }
+
+    /// The outcome of `asciiRange(of:input:)`.
+    ///
+    /// Three cases rather than an optional range, because "no match" and "cannot
+    /// use the fast path" must not collapse into the same value.
+    enum ByteRangeResult {
+        /// The pattern was found at this **byte** range.
+        case found(Range<Int>)
+        /// The input is pure ASCII and does not contain the pattern.
+        case notFound
+        /// The input is not pure ASCII; fall back to `String.range(of:)`.
+        case notAscii
+    }
+
+    /// Case-sensitive substring search returning the match's **byte** range.
+    ///
+    /// For pure-ASCII input a byte offset is also a valid UTF-8 view offset into
+    /// the string, because every ASCII byte is its own grapheme cluster - see this
+    /// type's doc comment for why that property is what makes byte indexing safe.
+    static func asciiRange(of pattern: [UInt8], input: String) -> ByteRangeResult {
+        guard !pattern.isEmpty else {
+            return .notFound
+        }
+        // `withAsciiBytes` reports ASCII-ness through its `Bool?` return, which cannot
+        // also carry an offset, so the match escapes through this variable. Its `nil`
+        // and the closure's are different questions: no match versus not ASCII.
+        var found: Range<Int>?
+        let isAscii = withAsciiBytes(of: input) { bytes in
+            if let start = firstMatch(of: pattern, in: bytes, folding: false) {
+                found = start..<(start + pattern.count)
+            }
+            return true
+        }
+        guard isAscii != nil else {
+            return .notAscii
+        }
+        return found.map { ByteRangeResult.found($0) } ?? .notFound
+    }
+
     /// Case-insensitive `hasSuffix` over UTF-8 bytes, without allocating.
     ///
     /// Returns `nil` if a non-ASCII byte is reached anywhere in `input`. A
@@ -229,6 +309,36 @@ enum CaseFolding {
             }
             return true
         }
+    }
+}
+
+/// A literal needle for case-sensitive substring search, with its UTF-8 bytes
+/// precomputed.
+///
+/// Declare one as a `static let` per needle so the bytes are encoded once rather
+/// than per call, then use `matches(_:)` in place of
+/// `haystack.range(of: needle) != nil` or `haystack.contains(needle)`.
+struct ExactNeedle {
+
+    private let text: String
+
+    /// The needle's UTF-8 bytes, or `nil` if it is not pure ASCII - in which case
+    /// every search falls back to Foundation.
+    private let asciiBytes: [UInt8]?
+
+    init(_ text: String) {
+        self.text = text
+        self.asciiBytes = CaseFolding.asciiBytes(of: text)
+    }
+
+    /// Whether `haystack` contains this needle. Equivalent to
+    /// `haystack.contains(text)`, including for non-ASCII input.
+    func matches(_ haystack: String) -> Bool {
+        if let asciiBytes = asciiBytes,
+           let fast = CaseFolding.asciiContainsExact(asciiBytes, input: haystack) {
+            return fast
+        }
+        return haystack.contains(text)
     }
 }
 
