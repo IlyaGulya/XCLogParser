@@ -18,7 +18,7 @@
 import XCTest
 @testable import XCLogParser
 
-/// Differential tests for the case-insensitive matchers in `Prefix.swift`.
+/// Differential tests for the case-insensitive matchers.
 ///
 /// These go through `Prefix`/`Contains`/`Suffix` rather than calling `CaseFolding`
 /// directly, because the contract being tested belongs to the pair: the byte path
