@@ -30,45 +30,64 @@ class SwiftCompilerTypeCheckOptionParser: SwiftCompilerTimeOptionParser {
         Self.compilerFlagNeedle.matches(commandDesc)
     }
 
+    func file(of option: SwiftTypeCheck) -> String {
+        option.file
+    }
+
     func parse(from commands: [String: Int]) -> [String: [SwiftTypeCheck]] {
-        return commands.compactMap { parse(command: $0.key, occurrences: $0.value) }
-            .joined().reduce([:]) { (typeChecksPerFile, typeCheckTime)
-        -> [String: [SwiftTypeCheck]] in
-            var typeChecksPerFile = typeChecksPerFile
-            if var typeChecks = typeChecksPerFile[typeCheckTime.file] {
-                typeChecks.append(typeCheckTime)
-                typeChecksPerFile[typeCheckTime.file] = typeChecks
-            } else {
-                typeChecksPerFile[typeCheckTime.file] = [typeCheckTime]
+        var typeChecksPerFile: [String: [SwiftTypeCheck]] = [:]
+        for (command, occurrences) in commands {
+            guard let typeChecks = parse(command: command, occurrences: occurrences) else {
+                continue
             }
-            return typeChecksPerFile
+            merge(typeChecks, into: &typeChecksPerFile)
+        }
+        return typeChecksPerFile
+    }
+
+    func parse(command: String, occurrences: Int) -> [SwiftTypeCheck]? {
+        return command.split(separator: "\r", omittingEmptySubsequences: false).compactMap { commandLine in
+            parse(fields: commandLine.split(separator: "\t", omittingEmptySubsequences: false),
+                  occurrences: occurrences)
         }
     }
 
-    private func parse(command: String, occurrences: Int) -> [SwiftTypeCheck]? {
-        return command.components(separatedBy: "\r").compactMap { commandLine in
-            // 0.14ms   /users/mnf/project/SomeFile.swift:10:12
-            let parts = commandLine.components(separatedBy: "\t")
-
-            guard parts.count == 2 else {
-                return nil
-            }
-
-            // 0.14ms
-            let duration = parseCompileDuration(parts[0])
-
-            // /users/mnf/project/SomeFile.swift:10:12
-            let fileAndLocation = parts[1]
-            guard let (file, line, column) = parseNameAndLocation(from: fileAndLocation) else {
-                return nil
-            }
-
-            return SwiftTypeCheck(file: file,
-                                  durationMS: duration,
-                                  startingLine: line,
-                                  startingColumn: column,
-                                  occurrences: occurrences)
+    func parse(utf8Fields: [String.UTF8View.SubSequence],
+               occurrences: Int,
+               fileURLs: FileURLCache) -> SwiftTypeCheck? {
+        // 0.14ms   /users/mnf/project/SomeFile.swift:10:12
+        guard utf8Fields.count == 2 else {
+            return nil
         }
+        guard let (file, line, column) = parseNameAndLocation(fromUTF8: utf8Fields[1], fileURLs: fileURLs) else {
+            return nil
+        }
+        return SwiftTypeCheck(file: file,
+                              durationMS: parseCompileDuration(fromUTF8: utf8Fields[0]),
+                              startingLine: line,
+                              startingColumn: column,
+                              occurrences: occurrences)
+    }
+
+    func parse(fields: [Substring], occurrences: Int) -> SwiftTypeCheck? {
+        // 0.14ms   /users/mnf/project/SomeFile.swift:10:12
+        guard fields.count == 2 else {
+            return nil
+        }
+
+        // 0.14ms
+        let duration = parseCompileDuration(fields[0])
+
+        // /users/mnf/project/SomeFile.swift:10:12
+        guard let (file, line, column) = parseNameAndLocation(from: fields[1]) else {
+            return nil
+        }
+
+        return SwiftTypeCheck(file: file,
+                              durationMS: duration,
+                              startingLine: line,
+                              startingColumn: column,
+                              occurrences: occurrences)
     }
 
 }

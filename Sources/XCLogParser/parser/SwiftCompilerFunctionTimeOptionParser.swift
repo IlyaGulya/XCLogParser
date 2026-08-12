@@ -30,52 +30,68 @@ class SwiftCompilerFunctionTimeOptionParser: SwiftCompilerTimeOptionParser {
         Self.compilerFlagNeedle.matches(commandDesc)
     }
 
+    func file(of option: SwiftFunctionTime) -> String {
+        option.file
+    }
+
     func parse(from commands: [String: Int]) -> [String: [SwiftFunctionTime]] {
-        let functionsPerFile = commands.compactMap { parse(command: $0.key, occurrences: $0.value) }
-            .joined().reduce([:]) { (functionsPerFile, functionTime)
-        -> [String: [SwiftFunctionTime]] in
-            var functionsPerFile = functionsPerFile
-            if var functions = functionsPerFile[functionTime.file] {
-                functions.append(functionTime)
-                functionsPerFile[functionTime.file] = functions
-            } else {
-                functionsPerFile[functionTime.file] = [functionTime]
+        var functionsPerFile: [String: [SwiftFunctionTime]] = [:]
+        for (command, occurrences) in commands {
+            guard let functions = parse(command: command, occurrences: occurrences) else {
+                continue
             }
-            return functionsPerFile
+            merge(functions, into: &functionsPerFile)
         }
         return functionsPerFile
     }
 
-    private func parse(command: String, occurrences: Int) -> [SwiftFunctionTime]? {
-        let functions: [SwiftFunctionTime] = command.components(separatedBy: "\r").compactMap { commandLine in
+    func parse(command: String, occurrences: Int) -> [SwiftFunctionTime]? {
+        return command.split(separator: "\r", omittingEmptySubsequences: false).compactMap { commandLine in
+            parse(fields: commandLine.split(separator: "\t", omittingEmptySubsequences: false),
+                  occurrences: occurrences)
+        }
+    }
 
-            // 0.14ms   /users/mnf/project/SomeFile.swift:10:12   someMethod(param:)
-            let parts = commandLine.components(separatedBy: "\t")
+    func parse(utf8Fields: [String.UTF8View.SubSequence],
+               occurrences: Int,
+               fileURLs: FileURLCache) -> SwiftFunctionTime? {
+        // 0.14ms   /users/mnf/project/SomeFile.swift:10:12   someMethod(param:)
+        guard utf8Fields.count == 3 else {
+            return nil
+        }
+        guard let (file, line, column) = parseNameAndLocation(fromUTF8: utf8Fields[1], fileURLs: fileURLs) else {
+            return nil
+        }
+        // swiftlint:disable:next optional_data_string_conversion
+        let signature = String(decoding: utf8Fields[2], as: UTF8.self)
+        return SwiftFunctionTime(file: file,
+                                 durationMS: parseCompileDuration(fromUTF8: utf8Fields[0]),
+                                 startingLine: line,
+                                 startingColumn: column,
+                                 signature: signature,
+                                 occurrences: occurrences)
+    }
 
-            guard parts.count == 3 else {
-                return nil
-            }
-
-            // 0.14ms
-            let duration = parseCompileDuration(parts[0])
-
-            // /users/mnf/project/SomeFile.swift:10:12
-            let fileAndLocation = parts[1]
-            guard let (file, line, column) = parseNameAndLocation(from: fileAndLocation) else {
-                return nil
-            }
-
-            // someMethod(param:)
-            let signature = parts[2]
-
-            return SwiftFunctionTime(file: file,
-                                     durationMS: duration,
-                                     startingLine: line,
-                                     startingColumn: column,
-                                     signature: signature,
-                                     occurrences: occurrences)
+    func parse(fields: [Substring], occurrences: Int) -> SwiftFunctionTime? {
+        // 0.14ms   /users/mnf/project/SomeFile.swift:10:12   someMethod(param:)
+        guard fields.count == 3 else {
+            return nil
         }
 
-        return functions
+        // 0.14ms
+        let duration = parseCompileDuration(fields[0])
+
+        // /users/mnf/project/SomeFile.swift:10:12
+        guard let (file, line, column) = parseNameAndLocation(from: fields[1]) else {
+            return nil
+        }
+
+        // someMethod(param:)
+        return SwiftFunctionTime(file: file,
+                                 durationMS: duration,
+                                 startingLine: line,
+                                 startingColumn: column,
+                                 signature: String(fields[2]),
+                                 occurrences: occurrences)
     }
 }

@@ -23,8 +23,18 @@ import Foundation
 /// `-Xfrontend` flags such as `-debug-time-function-bodies` and `-debug-time-expression-type-checking`
 public class SwiftCompilerParser {
 
-    /// Array to store the text of the log sections and their commandDetailDesc
-    var commands = [(String, String)]()
+    /// A section that might hold timing text, and the target it belongs to.
+    ///
+    /// The section rather than its text: reading `text` decodes it and caches the result, and most
+    /// registered sections turn out to hold nothing worth reading - so the decode has to wait until
+    /// the flag scan says this target was even built with the flags. Holding the section is one
+    /// reference; holding its text was up to a megabyte.
+    private struct Candidate {
+        let section: IDEActivityLogSection
+        let targetKey: String
+    }
+
+    private var candidates: [Candidate] = []
 
     /// Dictionary to store the function times found per filepath
     var functionsPerFile: [String: [SwiftFunctionTime]]?
@@ -36,8 +46,40 @@ public class SwiftCompilerParser {
 
     let typeCheckTimes = SwiftCompilerTypeCheckOptionParser()
 
+    /// The targets whose command carried each flag, filled in by `parse()`.
+    private var flaggedFunctionTargets: Set<String> = []
+    private var flaggedTypeCheckTargets: Set<String> = []
+
+    /// `<ms>\t` - what every timing line starts with, and what almost no other section text contains.
+    private static let timingMarker = Array("ms\t".utf8)
+
+    /// One `file://` string per distinct path, shared by every option naming it. Per-parser, so it is
+    /// never touched from more than one thread.
+    private let fileURLs = FileURLCache()
+
+    private static let lineSeparator = UInt8(ascii: "\r")
+    private static let fieldSeparator = UInt8(ascii: "\t")
+
+    /// Registers a section that may hold timing text, scoped to its target.
+    ///
+    /// `targetKey` is what makes the flag apply to the right sections. In a SwiftDriver build the flag
+    /// and the timing text are in *different* sections: the `SwiftDriver` section's command carries
+    /// `-debug-time-*` and its own text is empty, while the `SwiftCompile` siblings hold the text and
+    /// carry no flag. They share a target, so the target is what the flag verdict belongs to.
+    ///
+    /// Pass the enclosing target step's identifier. Sections from different targets must get different
+    /// keys, or one flagged target would make every other target's text eligible.
+    public func addLogSection(_ logSection: IDEActivityLogSection, targetKey: String) {
+        candidates.append(Candidate(section: logSection, targetKey: targetKey))
+    }
+
+    /// Registers a section whose flag and text are its own.
+    ///
+    /// The pre-SwiftDriver arrangement, and what this method meant before `targetKey` existed. Scoped
+    /// to itself by `uniqueIdentifier`, so its flag can never vouch for another section.
+    @available(*, deprecated, message: "Use addLogSection(_:targetKey:) so the flag scopes to a target")
     public func addLogSection(_ logSection: IDEActivityLogSection) {
-        commands.append((logSection.text, logSection.commandDetailDesc))
+        addLogSection(logSection, targetKey: logSection.uniqueIdentifier)
     }
 
     /// Checks the `commandDetailDesc` stored by the function `addLogSection`
@@ -46,31 +88,122 @@ public class SwiftCompilerParser {
     ///
     /// - Returns: a Dictionary of Strings with the raw Swift compiler times data as key and
     /// the number of ocurrences as value
+    @available(*, deprecated, message: "Use parse(), which does not hold every text at once")
     public func findRawSwiftTimes() -> [String: Int] {
-        let insertQueue = DispatchQueue(label: "swift_function_times_queue")
+        scanForFlags()
         var textsAndOccurrences: [String: Int] = [:]
-        DispatchQueue.concurrentPerform(iterations: commands.count) { index in
-            let (rawFunctionTimes, commandDesc) = commands[index]
-
-            let hasCompilerFlag = functionTimes.hasCompilerFlag(commandDesc: commandDesc)
-                                  || typeCheckTimes.hasCompilerFlag(commandDesc: commandDesc)
-
-            guard hasCompilerFlag && rawFunctionTimes.isEmpty == false else {
-                return
-            }
-            insertQueue.sync {
-                let outputOccurrence = (textsAndOccurrences[rawFunctionTimes] ?? 0) + 1
-                textsAndOccurrences[rawFunctionTimes] = outputOccurrence
-            }
+        forEachTimingText { text in
+            textsAndOccurrences[text, default: 0] += 1
         }
         return textsAndOccurrences
     }
 
     /// Parses the swift function times and store them internally
     public func parse() {
-        let rawTexts = findRawSwiftTimes()
-        functionsPerFile = functionTimes.parse(from: rawTexts)
-        typeChecksPerFile = typeCheckTimes.parse(from: rawTexts)
+        scanForFlags()
+
+        // Two passes over the candidates, because `occurrences` is a reported field: an option has to
+        // know how many sections held its text, and that is not known until every candidate has been
+        // counted. Counting first keeps parsing to one pass over distinct texts.
+        //
+        // Counting by hash rather than by text. Using the text as a dictionary key means hashing and
+        // comparing it in full on every insert, and these texts have a median of ~100 KB, so that
+        // lands once per section and dominates the parse. A hash collision would merge two different
+        // texts' counts - an occurrence number slightly off, never a wrong time - which is why the
+        // second pass re-derives the count by hash rather than trusting a shared identity.
+        var occurrencesByHash: [UInt64: Int] = [:]
+        forEachTimingCandidate { source in
+            occurrencesByHash[source.hashOfBytes(), default: 0] += 1
+        }
+
+        var functions: [String: [SwiftFunctionTime]] = [:]
+        var typeChecks: [String: [SwiftTypeCheck]] = [:]
+        var parsedHashes: Set<UInt64> = []
+
+        forEachTimingCandidate { source in
+            let hash = source.hashOfBytes()
+            guard parsedHashes.insert(hash).inserted else {
+                return
+            }
+            let occurrences = occurrencesByHash[hash] ?? 1
+            // Decode, parse, and let the text go before the next one is built. This is the whole point
+            // of scanning first: peak text residency is one section, not every section's text at once.
+            let text = source.decoded().trimmedIfNeeded()
+            // Split once and offer each line to both parsers rather than letting each split the text
+            // itself. A section's text holds both kinds of line, so both parsers are needed, and
+            // splitting a megabyte twice is the more expensive half of the whole operation.
+            //
+            // Splitting the UTF-8 view rather than the `Character` view. Both separators are ASCII, so
+            // the results are the same, but `Character` splitting runs grapheme breaking over every
+            // byte of the text - measured 6x slower on timing-shaped input, and there are 176 MB of it
+            // on a flagged fleet log.
+            for line in text.utf8.split(separator: Self.lineSeparator, omittingEmptySubsequences: false) {
+                let fields = line.split(separator: Self.fieldSeparator, omittingEmptySubsequences: false)
+                if let time = functionTimes.parse(utf8Fields: fields,
+                                                  occurrences: occurrences,
+                                                  fileURLs: fileURLs) {
+                    functions[time.file, default: []].append(time)
+                } else if let check = typeCheckTimes.parse(utf8Fields: fields,
+                                                           occurrences: occurrences,
+                                                           fileURLs: fileURLs) {
+                    typeChecks[check.file, default: []].append(check)
+                }
+            }
+        }
+
+        functionsPerFile = functions
+        typeChecksPerFile = typeChecks
+
+        // Nothing needs the sections now, and holding them would pin the whole log's buffer for as
+        // long as this parser lives.
+        candidates.removeAll()
+    }
+
+    /// Records which targets were built with each flag.
+    ///
+    /// Reads only `commandDetailDesc`, which is always a materialised `String`, so this touches no
+    /// section text and costs nothing on a build that used neither flag.
+    private func scanForFlags() {
+        flaggedFunctionTargets.removeAll()
+        flaggedTypeCheckTargets.removeAll()
+        for candidate in candidates {
+            let command = candidate.section.commandDetailDesc
+            if functionTimes.hasCompilerFlag(commandDesc: command) {
+                flaggedFunctionTargets.insert(candidate.targetKey)
+            }
+            if typeCheckTimes.hasCompilerFlag(commandDesc: command) {
+                flaggedTypeCheckTargets.insert(candidate.targetKey)
+            }
+        }
+    }
+
+    /// Calls `body` for each candidate whose target was flagged and whose text looks like timing output.
+    ///
+    /// The two filters are in this order on purpose. The flag check is a set lookup, so an unflagged
+    /// build stops here and never looks at any text. Only then does the marker scan run, and it reads
+    /// the bytes in place rather than building the string - most registered sections have no timing
+    /// text at all, and building theirs is exactly the cost this avoids.
+    private func forEachTimingCandidate(_ body: (TextScanSource) -> Void) {
+        guard !flaggedFunctionTargets.isEmpty || !flaggedTypeCheckTargets.isEmpty else {
+            return
+        }
+        for candidate in candidates {
+            guard flaggedFunctionTargets.contains(candidate.targetKey)
+                    || flaggedTypeCheckTargets.contains(candidate.targetKey) else {
+                continue
+            }
+            let source = candidate.section.textForScanning
+            guard source.contains(Self.timingMarker) else {
+                continue
+            }
+            body(source)
+        }
+    }
+
+    private func forEachTimingText(_ body: (String) -> Void) {
+        forEachTimingCandidate { source in
+            body(source.decoded().trimmedIfNeeded())
+        }
     }
 
     public func findFunctionTimesForFilePath(_ filePath: String) -> [SwiftFunctionTime]? {
@@ -89,6 +222,13 @@ public class SwiftCompilerParser {
             return nil
         }
         return typeChecksPerFile?[unescapedFilePath]
+    }
+
+    /// Whether any target was built with either flag.
+    ///
+    /// Valid after `parse()`. Lets the tree pass skip subtrees that cannot have times.
+    public func hasFlaggedTargets() -> Bool {
+        !flaggedFunctionTargets.isEmpty || !flaggedTypeCheckTargets.isEmpty
     }
 
     public func hasFunctionTimes() -> Bool {

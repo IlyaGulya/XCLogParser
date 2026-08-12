@@ -215,6 +215,11 @@ extension SwiftCompilerParserTests {
     //   `swift test --generate-linuxmain`
     // to regenerate.
     static let __allTests__SwiftCompilerParserTests = [
+        ("testAFlaggedTargetDoesNotVouchForAnotherTarget", testAFlaggedTargetDoesNotVouchForAnotherTarget),
+        ("testAnUnflaggedBuildYieldsNothing", testAnUnflaggedBuildYieldsNothing),
+        ("testParsesTimesWhenTheFlagIsInASiblingSection", testParsesTimesWhenTheFlagIsInASiblingSection),
+        ("testParsesTypeChecksWhenTheFlagIsInASiblingSection",
+         testParsesTypeChecksWhenTheFlagIsInASiblingSection),
         ("testParseSwiftFunctionTimes", testParseSwiftFunctionTimes),
         ("testParseSwiftTypeCheckTimes", testParseSwiftTypeCheckTimes),
     ]
