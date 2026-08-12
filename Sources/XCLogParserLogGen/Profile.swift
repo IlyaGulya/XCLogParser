@@ -83,8 +83,73 @@ public struct Profile: Codable, Equatable {
     /// errors at all leaves the build-status and linker-error handling unexercised.
     public var errorShare: Double
 
+    /// Emit the SwiftDriver section layout instead of the older `CompileSwift ` one.
+    ///
+    /// Xcode 12 moved Swift compilation behind `swift-driver`, and the sections changed shape with
+    /// it: the `-debug-time-*` flags land in a `SwiftDriver …` section whose own text is empty,
+    /// while the per-function timing output lands in its `SwiftCompile …` and `SwiftEmitModule …`
+    /// siblings, which carry no flag. Nothing about that arrangement can be expressed by the flat
+    /// one-section-per-file layout, so it needs its own switch rather than a knob on the old one.
+    ///
+    /// `nil` leaves the generator emitting the pre-SwiftDriver layout, which is what every existing
+    /// profile describes.
+    public var swiftDriverLayout: SwiftDriverLayout?
+
     /// Seed for the generator's PRNG. A profile plus a seed is a reproducible log.
     public var seed: UInt64
+
+    /// How to shape a SwiftDriver-layout log.
+    ///
+    /// The fields exist to make two separate claims falsifiable. `flaggedTargetShare` below 1 is what
+    /// tests the scoping - with every target flagged, a parser that ignored targets entirely would
+    /// produce the same output and look correct. `decoyTimingText` is what tests that the flag is
+    /// what admits the text rather than the text's own shape.
+    public struct SwiftDriverLayout: Codable, Equatable {
+
+        /// Fraction of targets built with `-debug-time-function-bodies` and
+        /// `-debug-time-expression-type-checking`, 0...1.
+        ///
+        /// At 0 no target carries the flags, which is the common path: the parse should read no
+        /// section text at all. At 1 every target carries them, which measures the feature at full
+        /// load but cannot detect a parser that lost the target scoping. Between the two, the
+        /// unflagged targets are the control group.
+        public var flaggedTargetShare: Double
+
+        /// Timing lines in each flagged `SwiftCompile` section's text.
+        ///
+        /// This is the volume knob for the feature: a flagged fleet log carries around 450,000
+        /// timing lines in 176 MB of text, and everything expensive about parsing them scales with
+        /// this number rather than with the section count.
+        public var timingLinesPerFile: Int
+
+        /// Give unflagged targets timing-shaped text too.
+        ///
+        /// The point of the whole scoping exercise. Xcode emits plenty of text that looks like
+        /// timing output, so a parser that admits text on its shape rather than on its target's flag
+        /// will pick this up - and with this false, that bug produces identical output and no test
+        /// can see it.
+        public var decoyTimingText: Bool
+
+        public init(flaggedTargetShare: Double,
+                    timingLinesPerFile: Int,
+                    decoyTimingText: Bool = true) {
+            self.flaggedTargetShare = flaggedTargetShare
+            self.timingLinesPerFile = timingLinesPerFile
+            self.decoyTimingText = decoyTimingText
+        }
+
+        /// Written out rather than synthesised, because the synthesised decoder does not know about
+        /// the initializer's default and would require the key in YAML. Defaulting to `true` is the
+        /// safer direction: a profile that omits it gets the decoys, so a scoping bug still fails
+        /// rather than going unnoticed.
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            flaggedTargetShare = try container.decode(Double.self, forKey: .flaggedTargetShare)
+            timingLinesPerFile = try container.decode(Int.self, forKey: .timingLinesPerFile)
+            decoyTimingText = try container.decodeIfPresent(Bool.self,
+                                                           forKey: .decoyTimingText) ?? true
+        }
+    }
 
     public struct Range: Codable, Equatable {
         public var min: Int
@@ -106,6 +171,7 @@ public struct Profile: Codable, Equatable {
                 targetCount: Int = 1,
                 nestingDepth: Int = 1,
                 errorShare: Double = 0,
+                swiftDriverLayout: SwiftDriverLayout? = nil,
                 seed: UInt64) {
         self.sectionCount = sectionCount
         self.diagnosticDensity = diagnosticDensity
@@ -117,6 +183,7 @@ public struct Profile: Codable, Equatable {
         self.targetCount = targetCount
         self.nestingDepth = nestingDepth
         self.errorShare = errorShare
+        self.swiftDriverLayout = swiftDriverLayout
         self.seed = seed
     }
 
@@ -160,6 +227,8 @@ extension Profile {
         targetCount = try container.decodeIfPresent(Int.self, forKey: .targetCount) ?? 1
         nestingDepth = try container.decodeIfPresent(Int.self, forKey: .nestingDepth) ?? 1
         errorShare = try container.decodeIfPresent(Double.self, forKey: .errorShare) ?? 0
+        swiftDriverLayout = try container.decodeIfPresent(SwiftDriverLayout.self,
+                                                         forKey: .swiftDriverLayout)
         seed = try container.decode(UInt64.self, forKey: .seed)
     }
 
@@ -188,7 +257,8 @@ extension Profile {
             ("detailVariety", detailVariety),
             ("clangSectionShare", clangSectionShare),
             ("errorShare", errorShare),
-            ("colonByteFrequency", colonByteFrequency)
+            ("colonByteFrequency", colonByteFrequency),
+            ("swiftDriverLayout.flaggedTargetShare", swiftDriverLayout?.flaggedTargetShare)
         ]
         for (name, value) in fractions {
             guard let value = value else { continue }
@@ -210,6 +280,21 @@ extension Profile {
         }
         guard nestingDepth >= 1 else {
             throw LogGenError.invalidProfile("nestingDepth must be at least 1")
+        }
+        if let layout = swiftDriverLayout {
+            guard layout.timingLinesPerFile >= 0 else {
+                throw LogGenError.invalidProfile(
+                    "swiftDriverLayout.timingLinesPerFile cannot be negative")
+            }
+            // The scoping is only observable with a target on each side of the flag, and a profile
+            // asking for a share strictly between 0 and 1 is asking for exactly that. One target
+            // cannot provide it, so this would silently generate a log that proves less than the
+            // profile claims.
+            let partiallyFlagged = layout.flaggedTargetShare > 0 && layout.flaggedTargetShare < 1
+            guard !partiallyFlagged || targetCount >= 2 else {
+                throw LogGenError.invalidProfile(
+                    "swiftDriverLayout.flaggedTargetShare between 0 and 1 needs targetCount of at least 2")
+            }
         }
     }
 

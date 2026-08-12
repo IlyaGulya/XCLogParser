@@ -58,6 +58,22 @@ extension LogBuilder {
         "-Wincompatible-pointer-types"
     ]
 
+    /// Function signatures for `-debug-time-function-bodies` output.
+    ///
+    /// The shape matters more than the variety: `swiftc` writes the signature as the third
+    /// tab-separated field, and it may contain spaces, colons and parentheses. A corpus of bare
+    /// identifiers would leave the field-splitting untested against the punctuation real output has.
+    static let functionSignatures = [
+        "getter textLabel",
+        "initializer init(frame:)",
+        "closure #1 (Swift.Result<Foundation.Data, Swift.Error>) -> () in configure()",
+        "static SomeModule.Factory.make(with:) -> SomeModule.Service",
+        "protocol witness for Presenting.present(_:animated:) in conformance ViewController",
+        "implicit closure #2 () throws -> Swift.Bool in validate(input:)",
+        "deinit",
+        "subscript.getter"
+    ]
+
     static let fillerLines = [
         "    CompileSwift normal arm64 Compiling\\ File.swift",
         "    cd /project",

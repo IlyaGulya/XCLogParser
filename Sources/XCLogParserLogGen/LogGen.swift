@@ -116,6 +116,16 @@ public struct LogGen {
         print("  grouping sections      \(pad("-"))\(pad(stats.intermediateSections))")
         print("  notices                \(pad("-"))\(pad(stats.noticeCount))")
         print("  distinct details       \(pad("-"))\(pad(stats.distinctDetails))")
+        if let layout = profile.swiftDriverLayout {
+            print("  SwiftDriver sections   \(pad("-"))\(pad(stats.swiftDriverSections))")
+            print("  SwiftEmitModule        \(pad("-"))\(pad(stats.swiftEmitModuleSections))")
+            print("  flagged targets        \(pad(percent(layout.flaggedTargetShare)))"
+                + "\(pad(stats.flaggedTargets))")
+            // The counts a fixture asserts against. Decoy lines are excluded, so these are what a
+            // correct parse should find and nothing else.
+            print("  function timing lines  \(pad("-"))\(pad(stats.functionTimingLines))")
+            print("  type-check lines       \(pad("-"))\(pad(stats.typeCheckTimingLines))")
+        }
         print("  section text           \(pad("-"))\(pad(bytes(stats.sectionTextBytes)))")
         print("  uncompressed           \(pad("-"))\(pad(bytes(raw)))")
         print("  compressed             \(pad("-"))\(pad(bytes(compressed)))")

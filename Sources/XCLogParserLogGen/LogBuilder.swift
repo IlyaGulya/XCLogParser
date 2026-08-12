@@ -23,11 +23,13 @@ import Foundation
 /// where the parser's field order has to be matched.
 public struct LogBuilder {
 
-    private let profile: Profile
-    private var random: SeededRandom
+    let profile: Profile
+    /// Internal rather than private so `LogBuilder+SwiftDriver.swift` can draw from the same stream:
+    /// one PRNG per build is what makes a profile plus a seed reproducible.
+    var random: SeededRandom
     /// The realised statistics, filled in as sections are emitted, so the generator reports what it
     /// actually produced rather than what was requested.
-    private var stats = Statistics()
+    var stats = Statistics()
 
     public init(profile: Profile) {
         self.profile = profile
@@ -44,6 +46,15 @@ public struct LogBuilder {
         public var clangSections = 0
         public var errorCount = 0
         public var intermediateSections = 0
+        /// SwiftDriver-layout counts. Zero on the older layout, which is what every existing profile
+        /// asks for.
+        public var swiftDriverSections = 0
+        public var swiftEmitModuleSections = 0
+        public var flaggedTargets = 0
+        /// Timing lines written into *flagged* targets' text - the ones a correct parse should find.
+        /// Decoy lines are deliberately not counted, so a fixture can assert against these directly.
+        public var functionTimingLines = 0
+        public var typeCheckTimingLines = 0
 
         public var clangSectionShare: Double {
             sectionCount == 0 ? 0 : Double(clangSections) / Double(sectionCount)
@@ -65,8 +76,18 @@ public struct LogBuilder {
     public mutating func build() -> (document: Data, statistics: Statistics) {
         var writer = SLFWriter()
 
-        let leaves = (0..<profile.sectionCount).map { makeLeaf(index: $0) }
-        stats.distinctDetails = Set(leaves.flatMap { $0.notices.map(\.detail) }).count
+        // The SwiftDriver layout groups by target itself, because a target's sections are the unit
+        // there: one `SwiftDriver` section holding the flag alongside the `SwiftCompile` sections
+        // holding the text. The older layout has no such grouping - one section per file - so it
+        // makes leaves and lets `group(leaves:depth:)` wrap them.
+        let topLevel: [Section]
+        if let layout = profile.swiftDriverLayout {
+            topLevel = makeSwiftDriverTargets(layout: layout)
+        } else {
+            let leaves = (0..<profile.sectionCount).map { makeLeaf(index: $0) }
+            stats.distinctDetails = Set(leaves.flatMap { $0.notices.map(\.detail) }).count
+            topLevel = group(leaves: leaves, depth: profile.nestingDepth)
+        }
 
         // `isCommandLineLog` in the parser keys off the root's domain type, so this string is
         // load-bearing rather than cosmetic.
@@ -80,7 +101,7 @@ public struct LogBuilder {
                 documentURL: "",
                 commandDetailDesc: "",
                 notices: [],
-                subSections: group(leaves: leaves, depth: profile.nestingDepth)
+                subSections: topLevel
             ),
             isRoot: true
         )
