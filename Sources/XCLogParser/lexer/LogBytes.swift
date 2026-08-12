@@ -55,4 +55,72 @@ final class LogBytes {
             return String(decoding: bytes.bindMemory(to: UInt8.self), as: UTF8.self)
         }
     }
+
+    /// Whether `range` contains `needle`, without decoding anything.
+    ///
+    /// For asking a cheap question of a section's text before deciding to build it. `string(in:)`
+    /// followed by `contains` answers the same question, but pays for the whole `String` first - and
+    /// the callers here are looking for a marker that most sections do not have, so most of those
+    /// strings would be built only to be thrown away.
+    ///
+    /// `needle` is bytes rather than a `String` so a caller can hold a `static let` of it and not
+    /// re-encode per call. An empty needle is contained by definition, matching `String.contains("")`.
+    func contains(_ needle: [UInt8], in range: Range<Int>) -> Bool {
+        guard !needle.isEmpty else {
+            return true
+        }
+        guard range.lowerBound >= 0, range.upperBound <= data.count, range.count >= needle.count else {
+            return false
+        }
+        return data.withUnsafeBytes { raw -> Bool in
+            guard let base = raw.baseAddress else { return false }
+            let bytes = UnsafeRawBufferPointer(start: base + range.lowerBound, count: range.count)
+                .bindMemory(to: UInt8.self)
+            let first = needle[0]
+            // Walk to each occurrence of the first byte, then compare the rest. `memchr` does the
+            // scanning, so the per-byte loop only runs where the needle could actually start.
+            var offset = 0
+            let last = bytes.count - needle.count
+            while offset <= last {
+                guard let hit = memchr(bytes.baseAddress! + offset, Int32(first), last - offset + 1) else {
+                    return false
+                }
+                let index = UnsafeRawPointer(hit) - UnsafeRawPointer(bytes.baseAddress!)
+                if memcmp(bytes.baseAddress! + index, needle, needle.count) == 0 {
+                    return true
+                }
+                offset = index + 1
+            }
+            return false
+        }
+    }
+
+    /// A hash of the bytes in `range`, for recognising two ranges that hold the same text.
+    ///
+    /// The point is to compare section texts without building them. The obvious spelling - use the
+    /// `String` as a dictionary key - hashes and compares the whole text on every insert, and section
+    /// texts here run to a megabyte each, so that cost lands once per section and dominates
+    /// everything around it.
+    ///
+    /// FNV-1a: it is a few lines, it needs no allocation, and callers use it only to group ranges
+    /// that they then confirm. Not for security, and not stable across releases - do not persist it.
+    func hash(in range: Range<Int>) -> UInt64 {
+        guard range.lowerBound >= 0, range.upperBound <= data.count, !range.isEmpty else {
+            return Self.fnvOffsetBasis
+        }
+        return data.withUnsafeBytes { raw -> UInt64 in
+            guard let base = raw.baseAddress else { return Self.fnvOffsetBasis }
+            let bytes = UnsafeRawBufferPointer(start: base + range.lowerBound, count: range.count)
+                .bindMemory(to: UInt8.self)
+            var hash = Self.fnvOffsetBasis
+            for byte in bytes {
+                hash ^= UInt64(byte)
+                hash = hash &* Self.fnvPrime
+            }
+            return hash
+        }
+    }
+
+    private static let fnvOffsetBasis: UInt64 = 14_695_981_039_346_656_037
+    private static let fnvPrime: UInt64 = 1_099_511_628_211
 }

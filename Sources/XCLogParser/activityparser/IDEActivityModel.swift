@@ -74,6 +74,26 @@ public class IDEActivityLogSection: Encodable {
         }
     }
 
+    /// The text as it is stored right now, for reading without building it.
+    ///
+    /// Lets a caller ask a cheap question of a section's text - does it contain this marker, what does
+    /// it hash to - and only reach for `text` if the answer says the text is worth having. Reading
+    /// `text` instead would decode and memoise every section it touched, which is the cost
+    /// `TextStorage` exists to avoid.
+    ///
+    /// Unlike `text` this does not mutate, so it is safe to call from several threads. It also does
+    /// not trim: the deferred case hands back the raw log range, where `text` would apply
+    /// `trimmedIfNeeded()`. A caller that needs the trimmed form must apply it after decoding, or
+    /// read `text` and let it cache.
+    var textForScanning: TextScanSource {
+        switch textStorage {
+        case .materialized(let text):
+            return .materialized(text)
+        case .deferred(let bytes, let range):
+            return .deferred(bytes, range)
+        }
+    }
+
     public let messages: [IDEActivityLogMessage]
     public let wasCancelled: Bool
     public let isQuiet: Bool

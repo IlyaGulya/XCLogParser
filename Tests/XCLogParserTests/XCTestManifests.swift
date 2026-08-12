@@ -304,8 +304,29 @@ extension LazyStringTests {
     ]
 }
 
+extension TextScanSourceTests {
+    static let __allTests__TextScanSourceTests = [
+        ("testByteCountAgreesWithoutDecoding", testByteCountAgreesWithoutDecoding),
+        ("testDecodedAgreesBetweenBothFormsAndDoesNotTrim", testDecodedAgreesBetweenBothFormsAndDoesNotTrim),
+        ("testEmptyNeedleIsContainedByDefinition", testEmptyNeedleIsContainedByDefinition),
+        ("testFindsNeedleAtEachPosition", testFindsNeedleAtEachPosition),
+        ("testHandlesNonAsciiWithoutSplittingScalars", testHandlesNonAsciiWithoutSplittingScalars),
+        ("testHashAgreesBetweenBothForms", testHashAgreesBetweenBothForms),
+        ("testHashDistinguishesDifferentText", testHashDistinguishesDifferentText),
+        ("testHashIsOffsetIndependent", testHashIsOffsetIndependent),
+        ("testHashOfAnInvalidRangeIsStableRatherThanTrapping", testHashOfAnInvalidRangeIsStableRatherThanTrapping),
+        ("testOutOfBoundsRangesAreRejectedRatherThanTrapping", testOutOfBoundsRangesAreRejectedRatherThanTrapping),
+        ("testProjectionFollowsTheStorageAfterTextIsRead", testProjectionFollowsTheStorageAfterTextIsRead),
+        ("testRangeConfinesTheSearch", testRangeConfinesTheSearch),
+        ("testRejectsNeedleThatIsNotThere", testRejectsNeedleThatIsNotThere),
+        ("testResumesAfterAPartialMatch", testResumesAfterAPartialMatch),
+        ("testScanningDoesNotMaterialiseTheSection", testScanningDoesNotMaterialiseTheSection)
+    ]
+}
+
 public func __allTests() -> [XCTestCaseEntry] {
     return [
+        testCase(TextScanSourceTests.__allTests__TextScanSourceTests),
         testCase(ActivityParserTests.__allTests__ActivityParserTests),
         testCase(ByteSetTests.__allTests__ByteSetTests),
         testCase(ClangWarningFlagsTests.__allTests__ClangWarningFlagsTests),
