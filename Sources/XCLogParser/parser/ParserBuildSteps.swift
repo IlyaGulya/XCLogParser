@@ -190,10 +190,14 @@ public final class ParserBuildSteps {
             } else if type == .detail {
                 step = step.moveSwiftStepsToRoot()
             }
+            if step.fetchedFromCache == false && Self.mayHoldSwiftcTimes(step: step, section: logSection) {
+                // Scoped to the target, not the section. In a SwiftDriver build the flag is in the
+                // `SwiftDriver` section's command and the timing text is in its `SwiftCompile`
+                // siblings, so only the target they share can carry the verdict. `parentIdentifier`
+                // is the enclosing target step, which after `groupedByTarget()` is exactly that.
+                swiftCompilerParser.addLogSection(logSection, targetKey: parentIdentifier)
+            }
             if step.detailStepType == .swiftCompilation {
-                if step.fetchedFromCache == false {
-                    swiftCompilerParser.addLogSection(logSection)
-                }
                 if let swiftSteps = logSection.getSwiftIndividualSteps(buildStep: step,
                                                                        parentCommandDetailDesc:
                                                                        parentLogSection?.commandDetailDesc ?? "",
@@ -309,47 +313,6 @@ public final class ParserBuildSteps {
         -> PartitionedNotices {
         let notices = Notice.parseFromLogSection(logSection, forType: type, truncLargeIssues: truncLargeIssues)
         return notices.partitionedByNoticeType()
-    }
-
-    private func decorateWithSwiftcTimes(_ mainStep: BuildStep) -> BuildStep {
-        swiftCompilerParser.parse()
-        guard swiftCompilerParser.hasFunctionTimes() || swiftCompilerParser.hasTypeChecks() else {
-            return mainStep
-        }
-        var mutableMainStep = mainStep
-        mutableMainStep.subSteps = mainStep.subSteps.map { subStep -> BuildStep in
-            var mutableTargetStep = subStep
-            mutableTargetStep.subSteps = addSwiftcTimesSteps(mutableTargetStep.subSteps)
-            return mutableTargetStep
-        }
-        return mutableMainStep
-    }
-
-    private func addSwiftcTimesSteps(_ subSteps: [BuildStep]) -> [BuildStep] {
-        return subSteps.map { subStep -> BuildStep in
-            switch subStep.detailStepType {
-            case .swiftCompilation:
-                var mutableSubStep = subStep
-                if swiftCompilerParser.hasFunctionTimes() {
-                    mutableSubStep.swiftFunctionTimes = swiftCompilerParser.findFunctionTimesForFilePath(
-                    subStep.documentURL)
-                }
-                if swiftCompilerParser.hasTypeChecks() {
-                    mutableSubStep.swiftTypeCheckTimes =
-                        swiftCompilerParser.findTypeChecksForFilePath(subStep.documentURL)
-                }
-                if mutableSubStep.subSteps.count > 0 {
-                     mutableSubStep.subSteps = addSwiftcTimesSteps(subStep.subSteps)
-                }
-                return mutableSubStep
-            case .swiftAggregatedCompilation:
-                var mutableSubStep = subStep
-                mutableSubStep.subSteps = addSwiftcTimesSteps(subStep.subSteps)
-                return mutableSubStep
-            default:
-                return subStep
-            }
-        }
     }
 
     private func wasFetchedFromCache(parent: BuildStep?, section: IDEActivityLogSection) -> Bool {

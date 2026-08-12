@@ -108,11 +108,101 @@ class SwiftCompilerParserTests: XCTestCase {
         XCTAssertEqual(2, typeChecks[0].occurrences)
     }
 
-    private func getFakeSwiftcSection(text: String, commandDescription: String) -> IDEActivityLogSection {
+    /// A SwiftDriver build: the flag is in one section's command, the timing text is in another's.
+    ///
+    /// This is the arrangement Xcode 12 introduced and the reason `targetKey` exists. Neither section
+    /// on its own looks like something to parse - the `SwiftDriver` section has the flag and no text,
+    /// the `SwiftCompile` section has text and no flag - so a parser that only accepts a section whose
+    /// own command carries the flag finds nothing here.
+    func testParsesTimesWhenTheFlagIsInASiblingSection() throws {
+        let target = "target-app"
+        let driver = getFakeSwiftcSection(text: "",
+                                          commandDescription: "-debug-time-function-bodies",
+                                          signature: "SwiftDriver MyApp")
+        let compile = getFakeSwiftcSection(text: "0.05ms\t/Users/user/MyView.swift:9:9\tgetter textLabel\r",
+                                          commandDescription: "swift-frontend -c MyView.swift",
+                                          signature: "SwiftCompile normal arm64 MyView.swift")
+        parser.addLogSection(driver, targetKey: target)
+        parser.addLogSection(compile, targetKey: target)
+
+        parser.parse()
+
+        let times = parser.findFunctionTimesForFilePath("file:///Users/user/MyView.swift")
+        XCTAssertEqual(1, times?.count)
+        XCTAssertEqual("getter textLabel", times?.first?.signature)
+        XCTAssertEqual(0.05, times?.first?.durationMS)
+    }
+
+    /// The same for expression type checking, whose lines have two fields rather than three.
+    func testParsesTypeChecksWhenTheFlagIsInASiblingSection() throws {
+        let target = "target-app"
+        let driver = getFakeSwiftcSection(text: "",
+                                          commandDescription: "-debug-time-expression-type-checking",
+                                          signature: "SwiftDriver MyApp")
+        let compile = getFakeSwiftcSection(text: "0.72ms\t/Users/user/MyView.swift:19:15\r",
+                                          commandDescription: "swift-frontend -c MyView.swift",
+                                          signature: "SwiftCompile normal arm64 MyView.swift")
+        parser.addLogSection(driver, targetKey: target)
+        parser.addLogSection(compile, targetKey: target)
+
+        parser.parse()
+
+        let checks = parser.findTypeChecksForFilePath("file:///Users/user/MyView.swift")
+        XCTAssertEqual(1, checks?.count)
+        XCTAssertEqual(19, checks?.first?.startingLine)
+        XCTAssertEqual(0.72, checks?.first?.durationMS)
+    }
+
+    /// A build where one target has the flags and another does not.
+    ///
+    /// The regression guard for the scoping. A flag is evidence about the target it was found in and
+    /// nothing else, so the unflagged target's text must not be parsed even though it is shaped
+    /// exactly like timing output - Xcode reports plenty of things that are, and a global "did anyone
+    /// pass the flag" test would claim all of them.
+    func testAFlaggedTargetDoesNotVouchForAnotherTarget() throws {
+        let driver = getFakeSwiftcSection(text: "",
+                                          commandDescription: "-debug-time-function-bodies",
+                                          signature: "SwiftDriver Flagged")
+        let flagged = getFakeSwiftcSection(text: "0.05ms\t/Users/user/Flagged.swift:9:9\tgetter a\r",
+                                          commandDescription: "swift-frontend -c Flagged.swift",
+                                          signature: "SwiftCompile normal arm64 Flagged.swift")
+        let decoy = getFakeSwiftcSection(text: "9.99ms\t/Users/user/Decoy.swift:1:1\tgetter b\r",
+                                         commandDescription: "swift-frontend -c Decoy.swift",
+                                         signature: "SwiftCompile normal arm64 Decoy.swift")
+        parser.addLogSection(driver, targetKey: "target-flagged")
+        parser.addLogSection(flagged, targetKey: "target-flagged")
+        parser.addLogSection(decoy, targetKey: "target-unflagged")
+
+        parser.parse()
+
+        XCTAssertEqual(1, parser.findFunctionTimesForFilePath("file:///Users/user/Flagged.swift")?.count)
+        XCTAssertNil(parser.findFunctionTimesForFilePath("file:///Users/user/Decoy.swift"))
+    }
+
+    /// A build that passed neither flag, which is almost every build.
+    ///
+    /// Worth its own test because the flag scan is what keeps the common path cheap: nothing here
+    /// should be parsed, and the timing-shaped text should never even be read.
+    func testAnUnflaggedBuildYieldsNothing() throws {
+        let compile = getFakeSwiftcSection(text: "0.05ms\t/Users/user/MyView.swift:9:9\tgetter textLabel\r",
+                                          commandDescription: "swift-frontend -c MyView.swift",
+                                          signature: "SwiftCompile normal arm64 MyView.swift")
+        parser.addLogSection(compile, targetKey: "target-app")
+
+        parser.parse()
+
+        XCTAssertFalse(parser.hasFlaggedTargets())
+        XCTAssertFalse(parser.hasFunctionTimes())
+        XCTAssertFalse(parser.hasTypeChecks())
+    }
+
+    private func getFakeSwiftcSection(text: String,
+                                      commandDescription: String,
+                                      signature: String = "") -> IDEActivityLogSection {
         return IDEActivityLogSection(sectionType: 1,
                                      domainType: "",
                                      title: "Swiftc Compilation",
-                                     signature: "",
+                                     signature: signature,
                                      timeStartedRecording: 0.0,
                                      timeStoppedRecording: 0.0,
                                      subSections: [],
