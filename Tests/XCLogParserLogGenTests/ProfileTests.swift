@@ -141,6 +141,68 @@ class ProfileTests: XCTestCase {
         }
     }
 
+    /// Absent means the older layout, so every profile written before it existed still describes the
+    /// log it used to describe.
+    func testSwiftDriverLayoutIsOptional() throws {
+        let profile = try Profile.load(contentsOf: try write(valid))
+        XCTAssertNil(profile.swiftDriverLayout)
+    }
+
+    func testLoadsASwiftDriverLayout() throws {
+        let yaml = valid + """
+
+        targetCount: 4
+        swiftDriverLayout:
+          flaggedTargetShare: 0.5
+          timingLinesPerFile: 12
+          decoyTimingText: true
+        """
+        let layout = try XCTUnwrap(try Profile.load(contentsOf: try write(yaml)).swiftDriverLayout)
+        XCTAssertEqual(layout.flaggedTargetShare, 0.5)
+        XCTAssertEqual(layout.timingLinesPerFile, 12)
+        XCTAssertTrue(layout.decoyTimingText)
+    }
+
+    func testRejectsOutOfRangeFlaggedShare() throws {
+        let yaml = valid + """
+
+        swiftDriverLayout:
+          flaggedTargetShare: 1.5
+          timingLinesPerFile: 4
+        """
+        XCTAssertThrowsError(try Profile.load(contentsOf: try write(yaml))) { error in
+            XCTAssertTrue("\(error)".contains("flaggedTargetShare"), "got \(error)")
+        }
+    }
+
+    /// A partially-flagged share is a request for unflagged targets to compare against, and one target
+    /// cannot supply them. Rejected rather than clamped, because the log would then prove less than
+    /// the profile says it does.
+    func testRejectsPartialFlaggedShareWithOneTarget() throws {
+        let yaml = valid + """
+
+        swiftDriverLayout:
+          flaggedTargetShare: 0.5
+          timingLinesPerFile: 4
+        """
+        XCTAssertThrowsError(try Profile.load(contentsOf: try write(yaml))) { error in
+            XCTAssertTrue("\(error)".contains("flaggedTargetShare"), "got \(error)")
+        }
+    }
+
+    /// The all-or-nothing shares are meaningful with a single target, so they must still load.
+    func testAcceptsWholeFlaggedSharesWithOneTarget() throws {
+        for share in ["0.0", "1.0"] {
+            let yaml = valid + """
+
+            swiftDriverLayout:
+              flaggedTargetShare: \(share)
+              timingLinesPerFile: 4
+            """
+            XCTAssertNoThrow(try Profile.load(contentsOf: try write(yaml)), "share \(share)")
+        }
+    }
+
     /// The checked-in profiles are part of the deliverable, so they are validated here rather than
     /// only when someone runs the generator.
     func testCheckedInProfilesAreValid() throws {

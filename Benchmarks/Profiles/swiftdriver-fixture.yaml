@@ -1,0 +1,40 @@
+# A small SwiftDriver-layout log, for the correctness fixture rather than for measurement.
+#
+# Xcode 12 moved Swift compilation behind swift-driver, and the sections changed shape with it: the
+# `-debug-time-*` flags land in a `SwiftDriver …` section whose own text is empty, while the timing
+# output lands in its `SwiftCompile …` and `SwiftEmitModule …` siblings, which carry no flag. The only
+# thing tying them together is the target they share.
+#
+# The two fields that make this a test rather than a demo:
+#
+#   flaggedTargetShare: 0.5   half the targets carry the flags, half do not. With every target
+#                             flagged, a parser that ignored the target scoping entirely would
+#                             produce exactly the same output and look correct.
+#
+#   decoyTimingText: true     the unflagged targets get timing-shaped text too. Nothing about those
+#                             bytes says whether they should be parsed - only the target's flag does -
+#                             so this is what catches a parser admitting text on its shape.
+#
+# Small on purpose: this is checked against expected counts, not timed. Use swiftdriver-fleet.yaml
+# for numbers.
+
+sectionCount: 40
+diagnosticDensity: 0
+sectionTextBytes:
+  min: 0
+  max: 0
+noticesPerSection:
+  buckets:
+    - count: 0
+      weight: 1
+detailVariety: 0
+colonByteFrequency: null
+clangSectionShare: 0
+targetCount: 4
+nestingDepth: 1
+errorShare: 0
+swiftDriverLayout:
+  flaggedTargetShare: 0.5
+  timingLinesPerFile: 8
+  decoyTimingText: true
+seed: 20260812

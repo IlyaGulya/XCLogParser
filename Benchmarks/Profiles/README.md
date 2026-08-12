@@ -76,6 +76,45 @@ it actually is.
 - **`smoke.yaml`** — 200 sections, for checking the harness runs at all. Too small to measure:
   stage timings are dominated by process startup and the baseline comparison will flag ordinary
   noise as a regression.
+- **`swiftdriver-fleet.yaml`** — the SwiftDriver layout at fleet scale, every target flagged.
+  ~456k timing lines over 24k files, which is what the swiftc-times parse scales with.
+- **`swiftdriver-fixture.yaml`** — small, half the targets flagged, decoy text everywhere. For the
+  correctness fixture in `Tests/XCLogParserLogGenTests/SwiftDriverLayoutTests.swift`, not for
+  timing.
+
+### The SwiftDriver layout
+
+Xcode 12 moved Swift compilation behind `swift-driver` and the sections changed shape. `CompileSwift`
+became three siblings that share a target, and the flag and the output no longer live together:
+
+| Section | Carries the flag? | Carries the timing text? |
+| --- | --- | --- |
+| `SwiftDriver -- …swift-frontend… -Xfrontend -debug-time-function-bodies` | yes | no — `text` is empty |
+| `SwiftCompile normal arm64 <file>` | no | yes |
+| `SwiftEmitModule normal arm64 Emitting\ module\ for\ <target>` | no | yes |
+
+`swiftDriverLayout` in a profile switches to it. The signatures above are copied from a real Xcode 26
+log rather than invented, because the parser matches on them.
+
+Two of its fields exist to make a claim falsifiable rather than to size the log:
+
+- `flaggedTargetShare` below 1 puts unflagged targets in the same log. With every target flagged, a
+  parser that ignored the target scoping entirely produces identical output and looks correct.
+- `decoyTimingText` gives those unflagged targets timing-shaped text. Nothing about the bytes says
+  whether they should be parsed — only the target's flag does — so this is what catches a parser
+  admitting text on its shape. Removing the target check from `forEachTimingCandidate` takes the
+  fixture from 144/20 to 292/36.
+
+The flags are also what keeps the common path cheap, and with the generator that is measurable: the
+same log, same 42.7 MB of timing-shaped text, differing only in whether any target carries the flags.
+
+| | unflagged | flagged |
+| --- | --- | --- |
+| `buildstep-parse` p50 | 56.2 ms | 1.102 s |
+| footprint | +17.8 MB | +99.9 MB |
+
+Twenty times cheaper, because the flag scan reads only `commandDetailDesc` and never builds a
+section's text.
 
 ### Why two large profiles rather than one scaled
 
@@ -98,3 +137,10 @@ log: the file paths, target names and warning text come from small fixed corpora
 depends on the *variety* of strings rather than their shape will differ. The generated logs are
 built for benchmarking the parsing pipeline, not for testing parser correctness against Xcode's
 real output — the fixtures in `Tests/` cover that.
+
+The one exception is `swiftDriverLayout`, which is used for correctness as well. Not because the
+fidelity is better there, but because no committed fixture can cover it: the real flagged logs are
+16 MB and carry absolute paths, target and project names. What the fixture asserts is narrow enough
+for a generated log to settle — that the times found match the ones written, and that no unflagged
+target contributes any — and the generator reports both counts, so the expectation comes from the log
+rather than from a number pasted into the test.

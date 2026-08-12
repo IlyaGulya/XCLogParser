@@ -1,0 +1,38 @@
+# A SwiftDriver-layout log at fleet scale, for measuring the swiftc-times parse.
+#
+# This is the workload the timing feature exists for: a build run with
+# `-debug-time-function-bodies` and `-debug-time-expression-type-checking`, where the flags sit in
+# `SwiftDriver …` sections whose text is empty and the output sits in their `SwiftCompile …` and
+# `SwiftEmitModule …` siblings. See swiftdriver-fixture.yaml for the correctness fixture.
+#
+# Sized against a real flagged fleet log: ~450,000 timing lines over ~24,000 files in ~176 MB of
+# section text. 24,000 files at 19 lines each lands on the same volume, which is what the parse
+# actually scales with - the per-line work dominates, not the section count.
+#
+# `flaggedTargetShare: 1.0` on purpose here, unlike the fixture. This profile is for numbers, and a
+# partially-flagged log measures the feature at half load while telling you nothing extra: the
+# scoping is what the fixture tests, and it tests it on counts rather than on time.
+#
+# `decoyTimingText: false` for the same reason - the unflagged share is zero, so there is nothing to
+# decoy, and text nobody parses would inflate the log without changing what is measured.
+
+sectionCount: 24000
+diagnosticDensity: 0
+sectionTextBytes:
+  min: 0
+  max: 0
+noticesPerSection:
+  buckets:
+    - count: 0
+      weight: 1
+detailVariety: 0
+colonByteFrequency: null
+clangSectionShare: 0
+targetCount: 150
+nestingDepth: 1
+errorShare: 0
+swiftDriverLayout:
+  flaggedTargetShare: 1.0
+  timingLinesPerFile: 19
+  decoyTimingText: false
+seed: 20260812
