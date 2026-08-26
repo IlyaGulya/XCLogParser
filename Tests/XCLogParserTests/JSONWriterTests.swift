@@ -22,7 +22,7 @@ import XCTest
 /// all "does this still agree with Foundation". Key *order* deliberately differs (declaration order
 /// instead of Foundation's unstable hash order) and empty arrays are `[]`, so comparison is on
 /// parsed structure rather than bytes, except where the format itself is under test.
-class JSONWriterTests: XCTestCase {
+class JSONWriterTests: XCTestCase { // swiftlint:disable:this type_body_length
 
     // MARK: - Scalar parity with JSONEncoder
 
@@ -187,7 +187,7 @@ class JSONWriterTests: XCTestCase {
         step.write(to: &writer)
         let object = try JSONSerialization.jsonObject(with: Data(writer.bytes)) as? [String: Any]
         for field in ["warnings", "errors", "notes", "swiftFunctionTimes",
-                      "swiftTypeCheckTimes", "linkerStatistics", "clangTimeTraceFile"] {
+                      "swiftTypeCheckTimes", "linkerStatistics", "clangTimeTraceFile", "taskMetrics"] {
             XCTAssertNil(object?[field], "\(field) should be absent, not null")
         }
     }
@@ -270,6 +270,9 @@ class JSONWriterTests: XCTestCase {
                                       objectFiles: 15, objectFilesBytes: 16,
                                       archiveFiles: 17, archiveFilesBytes: 18,
                                       dylibFiles: 19, wroteOutputFileBytes: 20)
+        let taskMetrics = IDEActivityLogSectionAttachment.BuildOperationTaskMetrics(utime: 21, stime: 22,
+                                                                                    maxRSS: 23, wcStartTime: 24,
+                                                                                    wcDuration: 25)
         return step(identifier: "root",
                     subSteps: [step(identifier: "child")],
                     warnings: [notice, plainNotice],
@@ -282,7 +285,8 @@ class JSONWriterTests: XCTestCase {
                                                          startingLine: 1, startingColumn: 2,
                                                          occurrences: 1)],
                     clangTimeTraceFile: "/tmp/trace.json",
-                    linkerStatistics: linker)
+                    linkerStatistics: linker,
+                    taskMetrics: taskMetrics)
     }
 
     /// Not `private`: `JSONWriterStreamingTests` builds its trees from the same fixture, so the two
@@ -295,7 +299,8 @@ class JSONWriterTests: XCTestCase {
                      swiftFunctionTimes: [SwiftFunctionTime]? = nil,
                      swiftTypeCheckTimes: [SwiftTypeCheck]? = nil,
                      clangTimeTraceFile: String? = nil,
-                     linkerStatistics: LinkerStatistics? = nil) -> BuildStep {
+                     linkerStatistics: LinkerStatistics? = nil,
+                     taskMetrics: IDEActivityLogSectionAttachment.BuildOperationTaskMetrics? = nil) -> BuildStep {
         return BuildStep(type: .detail,
                          machineName: "machine",
                          buildIdentifier: "build-id",
@@ -326,6 +331,7 @@ class JSONWriterTests: XCTestCase {
                          compilationDuration: 0,
                          clangTimeTraceFile: clangTimeTraceFile,
                          linkerStatistics: linkerStatistics,
-                         swiftTypeCheckTimes: swiftTypeCheckTimes)
+                         swiftTypeCheckTimes: swiftTypeCheckTimes,
+                         taskMetrics: taskMetrics)
     }
 }

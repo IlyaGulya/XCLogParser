@@ -19,6 +19,8 @@
 
 import Foundation
 
+// swiftlint:disable file_length
+
 /// Types of build step
 public enum BuildStepType: String, Encodable {
     /// Root step
@@ -283,6 +285,11 @@ public struct BuildStep: Encodable {
     /// This field will be populated
     public var linkerStatistics: LinkerStatistics?
 
+    /// Wall-clock and CPU time of the llbuild task behind this step, from the
+    /// section's TaskMetrics attachment. Present on leaf task steps only.
+    /// Times are microseconds; `maxRSS` is bytes.
+    public var taskMetrics: IDEActivityLogSectionAttachment.BuildOperationTaskMetrics?
+
     /// Public initializer 
     public init(type: BuildStepType,
                 machineName: String,
@@ -314,7 +321,8 @@ public struct BuildStep: Encodable {
                 compilationDuration: Double,
                 clangTimeTraceFile: String?,
                 linkerStatistics: LinkerStatistics?,
-                swiftTypeCheckTimes: [SwiftTypeCheck]?
+                swiftTypeCheckTimes: [SwiftTypeCheck]?,
+                taskMetrics: IDEActivityLogSectionAttachment.BuildOperationTaskMetrics? = nil
                 ) {
         self.type = type
         self.machineName = machineName
@@ -347,6 +355,7 @@ public struct BuildStep: Encodable {
         self.clangTimeTraceFile = clangTimeTraceFile
         self.linkerStatistics = linkerStatistics
         self.swiftTypeCheckTimes = swiftTypeCheckTimes
+        self.taskMetrics = taskMetrics
     }
 }
 

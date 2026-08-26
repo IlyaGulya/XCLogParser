@@ -215,6 +215,8 @@ public final class ParserBuildSteps {
                 step.linkerStatistics = clangCompilerParser.parseLinkerStatistics(logSection)
             }
 
+            step.taskMetrics = logSection.attachments.lazy.compactMap { $0.metrics }.first
+
             step = addCompilationTimes(step: step)
             return step
     }

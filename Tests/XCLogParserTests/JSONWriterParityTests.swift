@@ -30,7 +30,7 @@ class JSONWriterParityTests: XCTestCase {
     /// `testBuildStepWritesTheSameFieldsAsJSONEncoder` reaches these types only through a step, so a
     /// field dropped from one of them shows up there as a missing nested key - but only while the
     /// fixture keeps populating it. Encoding each type directly ties the check to the type instead of
-    /// to `populatedStep`'s contents, which is what stops the four smaller writers drifting silently.
+    /// to `populatedStep`'s contents, which is what stops the five smaller writers drifting silently.
     func testEveryWriterMatchesJSONEncoder() throws {
         func check<T: Encodable>(_ value: T,
                                  _ write: (T, inout JSONWriter) -> Void,
@@ -60,6 +60,9 @@ class JSONWriterParityTests: XCTestCase {
         }
         if let linker = step.linkerStatistics {
             try check(linker) { $0.write(to: &$1) }
+        }
+        if let taskMetrics = step.taskMetrics {
+            try check(taskMetrics) { $0.write(to: &$1) }
         }
     }
 }

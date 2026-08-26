@@ -180,6 +180,8 @@ extension ParserTests {
         ("testParseAppCompilationTimes", testParseAppCompilationTimes),
         ("testParseAppNoopCompilationTimes", testParseAppNoopCompilationTimes),
         ("testParseInterfaceBuilderWarning", testParseInterfaceBuilderWarning),
+        ("testParseLogSectionPopulatesTaskMetricsFromAttachment",
+         testParseLogSectionPopulatesTaskMetricsFromAttachment),
         ("testParseNote", testParseNote),
         ("testParseSwiftIssuesDetails", testParseSwiftIssuesDetails),
         ("testParseTargetCompilationTimes", testParseTargetCompilationTimes),

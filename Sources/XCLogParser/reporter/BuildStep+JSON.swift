@@ -88,6 +88,11 @@ extension BuildStep {
             linkerStatistics.write(to: &writer)
         }
 
+        if let taskMetrics = taskMetrics {
+            writer.key("taskMetrics")
+            taskMetrics.write(to: &writer)
+        }
+
         writer.writeArray("swiftTypeCheckTimes", swiftTypeCheckTimes) { $1.write(to: &$0) }
         writer.endObject()
     }
@@ -167,6 +172,19 @@ extension LinkerStatistics {
         writer.field("archiveFilesBytes", archiveFilesBytes)
         writer.field("dylibFiles", dylibFiles)
         writer.field("wroteOutputFileBytes", wroteOutputFileBytes)
+        writer.endObject()
+    }
+}
+
+extension IDEActivityLogSectionAttachment.BuildOperationTaskMetrics {
+
+    func write(to writer: inout JSONWriter) {
+        writer.beginObject()
+        writer.field("utime", utime)
+        writer.field("stime", stime)
+        writer.field("maxRSS", maxRSS)
+        writer.field("wcStartTime", wcStartTime)
+        writer.field("wcDuration", wcDuration)
         writer.endObject()
     }
 }

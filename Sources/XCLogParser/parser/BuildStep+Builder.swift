@@ -52,7 +52,8 @@ extension BuildStep {
                          compilationDuration: compilationDuration,
                          clangTimeTraceFile: clangTimeTraceFile,
                          linkerStatistics: linkerStatistics,
-                         swiftTypeCheckTimes: swiftTypeCheckTimes
+                         swiftTypeCheckTimes: swiftTypeCheckTimes,
+                         taskMetrics: taskMetrics
         )
     }
 
@@ -87,7 +88,8 @@ extension BuildStep {
                          compilationDuration: compilationDuration,
                          clangTimeTraceFile: clangTimeTraceFile,
                          linkerStatistics: linkerStatistics,
-                         swiftTypeCheckTimes: swiftTypeCheckTimes)
+                         swiftTypeCheckTimes: swiftTypeCheckTimes,
+                         taskMetrics: taskMetrics)
     }
 
     func with(signature newSignature: String) -> BuildStep {
@@ -121,7 +123,8 @@ extension BuildStep {
                          compilationDuration: compilationDuration,
                          clangTimeTraceFile: clangTimeTraceFile,
                          linkerStatistics: linkerStatistics,
-                         swiftTypeCheckTimes: swiftTypeCheckTimes)
+                         swiftTypeCheckTimes: swiftTypeCheckTimes,
+                         taskMetrics: taskMetrics)
     }
 
     func with(errors newErrors: [Notice]?, notes newNotes: [Notice]?, warnings newWarnings: [Notice]?) -> BuildStep {
@@ -155,7 +158,8 @@ extension BuildStep {
                          compilationDuration: compilationDuration,
                          clangTimeTraceFile: clangTimeTraceFile,
                          linkerStatistics: linkerStatistics,
-                         swiftTypeCheckTimes: swiftTypeCheckTimes)
+                         swiftTypeCheckTimes: swiftTypeCheckTimes,
+                         taskMetrics: taskMetrics)
     }
 
     func withFilteredNotices() -> BuildStep {
@@ -192,7 +196,8 @@ extension BuildStep {
                          compilationDuration: compilationDuration,
                          clangTimeTraceFile: clangTimeTraceFile,
                          linkerStatistics: linkerStatistics,
-                         swiftTypeCheckTimes: swiftTypeCheckTimes)
+                         swiftTypeCheckTimes: swiftTypeCheckTimes,
+                         taskMetrics: taskMetrics)
     }
 
     func with(subSteps newSubSteps: [BuildStep]) -> BuildStep {
@@ -226,7 +231,8 @@ extension BuildStep {
                          compilationDuration: compilationDuration,
                          clangTimeTraceFile: clangTimeTraceFile,
                          linkerStatistics: linkerStatistics,
-                         swiftTypeCheckTimes: swiftTypeCheckTimes)
+                         swiftTypeCheckTimes: swiftTypeCheckTimes,
+                         taskMetrics: taskMetrics)
     }
 
     func with(newCompilationEndTimestamp: Double,
@@ -261,7 +267,8 @@ extension BuildStep {
                          compilationDuration: newCompilationDuration,
                          clangTimeTraceFile: clangTimeTraceFile,
                          linkerStatistics: linkerStatistics,
-                         swiftTypeCheckTimes: swiftTypeCheckTimes)
+                         swiftTypeCheckTimes: swiftTypeCheckTimes,
+                         taskMetrics: taskMetrics)
     }
 
     func with(identifier newIdentifier: String) -> BuildStep {
@@ -295,7 +302,8 @@ extension BuildStep {
                          compilationDuration: compilationDuration,
                          clangTimeTraceFile: clangTimeTraceFile,
                          linkerStatistics: linkerStatistics,
-                         swiftTypeCheckTimes: swiftTypeCheckTimes)
+                         swiftTypeCheckTimes: swiftTypeCheckTimes,
+                         taskMetrics: taskMetrics)
     }
 
     func with(parentIdentifier newParentIdentifier: String) -> BuildStep {
@@ -329,7 +337,8 @@ extension BuildStep {
                          compilationDuration: compilationDuration,
                          clangTimeTraceFile: clangTimeTraceFile,
                          linkerStatistics: linkerStatistics,
-                         swiftTypeCheckTimes: swiftTypeCheckTimes)
+                         swiftTypeCheckTimes: swiftTypeCheckTimes,
+                         taskMetrics: taskMetrics)
     }
 
     private func filterNotices(_ notices: [Notice]?) -> [Notice]? {

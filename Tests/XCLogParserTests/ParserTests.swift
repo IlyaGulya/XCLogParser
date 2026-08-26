@@ -586,6 +586,71 @@ note: use 'updatedDoSomething' instead\r doSomething()\r        ^~~~~~~~~~~\r   
         }
     }
 
+    /// `taskMetrics` should come straight from the section's `TaskMetrics` attachment (added in
+    /// Xcode 15.3, decoded into `IDEActivityLogSectionAttachment.metrics`) and stay `nil` when the
+    /// section carries no such attachment - the only new behavior `parseLogSection` gains for
+    /// per-task CPU/wall time reporting.
+    func testParseLogSectionPopulatesTaskMetricsFromAttachment() throws {
+        let metrics = IDEActivityLogSectionAttachment.BuildOperationTaskMetrics(utime: 100_000,
+                                                                                stime: 20_000,
+                                                                                maxRSS: 4_096_000,
+                                                                                wcStartTime: 1_000,
+                                                                                wcDuration: 150_000)
+        let attachment = try IDEActivityLogSectionAttachment(
+            identifier: "com.apple.dt.ActivityLogSectionAttachment.TaskMetrics",
+            majorVersion: 1,
+            minorVersion: 0,
+            metrics: metrics,
+            buildOperationMetrics: nil,
+            backtrace: nil)
+
+        let sectionWithMetrics = fakeSectionWithAttachments(uniqueIdentifier: "with-metrics",
+                                                            attachments: [attachment])
+        let stepWithMetrics = try parser.parseLogSection(logSection: sectionWithMetrics,
+                                                         type: .detail,
+                                                         parentSection: nil)
+        XCTAssertEqual(stepWithMetrics.taskMetrics?.utime, metrics.utime)
+        XCTAssertEqual(stepWithMetrics.taskMetrics?.stime, metrics.stime)
+        XCTAssertEqual(stepWithMetrics.taskMetrics?.maxRSS, metrics.maxRSS)
+        XCTAssertEqual(stepWithMetrics.taskMetrics?.wcStartTime, metrics.wcStartTime)
+        XCTAssertEqual(stepWithMetrics.taskMetrics?.wcDuration, metrics.wcDuration)
+
+        let sectionWithoutAttachments = fakeSectionWithAttachments(uniqueIdentifier: "without-metrics",
+                                                                   attachments: [])
+        let stepWithoutMetrics = try parser.parseLogSection(logSection: sectionWithoutAttachments,
+                                                            type: .detail,
+                                                            parentSection: nil)
+        XCTAssertNil(stepWithoutMetrics.taskMetrics)
+    }
+
+    /// A minimal section for the `taskMetrics` test above - only `uniqueIdentifier` and
+    /// `attachments` vary between its two cases, so those are the only parameters.
+    private func fakeSectionWithAttachments(uniqueIdentifier: String,
+                                            attachments: [IDEActivityLogSectionAttachment])
+    -> IDEActivityLogSection {
+        return IDEActivityLogSection(sectionType: 1,
+                                     domainType: "",
+                                     title: "Compile a.swift",
+                                     signature: "",
+                                     timeStartedRecording: 1.0,
+                                     timeStoppedRecording: 2.0,
+                                     subSections: [],
+                                     text: "",
+                                     messages: [],
+                                     wasCancelled: false,
+                                     isQuiet: true,
+                                     wasFetchedFromCache: false,
+                                     subtitle: "",
+                                     location: DVTDocumentLocation(documentURLString: "",
+                                                                   timestamp: 1.0),
+                                     commandDetailDesc: "",
+                                     uniqueIdentifier: uniqueIdentifier,
+                                     localizedResultString: "",
+                                     xcbuildSignature: "",
+                                     attachments: attachments,
+                                     unknown: 0)
+    }
+
     func testParseOmitWarnings() throws {
         let timestamp = Date().timeIntervalSinceReferenceDate
         let textDocumentLocation = DVTTextDocumentLocation(documentURLString: "file://project/file.m",
