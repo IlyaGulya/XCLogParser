@@ -215,7 +215,12 @@ public final class ParserBuildSteps {
                 step.linkerStatistics = clangCompilerParser.parseLinkerStatistics(logSection)
             }
 
-            step.taskMetrics = logSection.attachments.lazy.compactMap { $0.metrics }.first
+            // Most sections carry no attachment at all, and touching the array retains it, so the
+            // empty case is rejected before any of that. Same shape as the prefix pre-guard in
+            // mayHoldSwiftcTimes: one cheap test keeps the common path out of the real work.
+            if !logSection.attachments.isEmpty {
+                step.taskMetrics = logSection.attachments.lazy.compactMap { $0.metrics }.first
+            }
 
             step = addCompilationTimes(step: step)
             return step
